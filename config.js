@@ -27,9 +27,12 @@ module.exports={
   GOOGLE_ENABLED:bool(process.env.GOOGLE_ENABLED,false),
 
   GITHUB_ENABLED:bool(process.env.GITHUB_ENABLED,true),
+  GITHUB_TIMEOUT_MS:num(process.env.GITHUB_TIMEOUT_MS,12000),
+  CHANNEL_CONCURRENCY:num(process.env.CHANNEL_CONCURRENCY,3),
+  URL_CHECK_CONCURRENCY:num(process.env.URL_CHECK_CONCURRENCY,6),
   URL_CHECK_TIMEOUT_MS:num(process.env.URL_CHECK_TIMEOUT_MS,10000),
   WEB_PAGE_TIMEOUT_MS:num(process.env.WEB_PAGE_TIMEOUT_MS,12000),
-  SEARCH_DELAY_MS:num(process.env.SEARCH_DELAY_MS,700),
+  SEARCH_DELAY_MS:num(process.env.SEARCH_DELAY_MS,250),
   MAX_RESULTS_PER_CHANNEL:num(process.env.MAX_RESULTS_PER_CHANNEL,10),
   MAX_LIVE_RESULTS:num(process.env.MAX_LIVE_RESULTS,200),
   LIVE_QUERIES:(process.env.LIVE_QUERIES||'live sports m3u8,live cricket m3u8,live football m3u8,live event m3u8,live tv m3u8').split(',').map(s=>s.trim()).filter(Boolean),
