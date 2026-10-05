@@ -25,5 +25,20 @@ async function collectLive(){let candidates=[];for(const q of config.LIVE_QUERIE
 function render(items){return '#EXTM3U\n'+items.map(x=>x.meta+'\n'+x.url).join('\n')+'\n';}
 async function writeTarget(path,content,message){let sha=null;try{sha=(await targetFile(path)).sha;}catch(e){if(e.response?.status!==404)throw e;}const body={message,content:Buffer.from(content,'utf8').toString('base64'),branch:config.TARGET_BRANCH};if(sha)body.sha=sha;await gh.put(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`,body);}
 async function run(){if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');const source=await targetFile(config.SOURCE_PLAYLIST);const channels=parseM3U(source.content);if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);console.log('Target channel count:',channels.length);console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];for(let i=0;i<channels.length;i++){console.log(`[${i+1}/${channels.length}] ${channels[i].name}`);found.push(...await collectChannel(channels[i]));}found=unique(found);await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);console.log('Search collection:',found.length);const live=unique(await collectLive());await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);console.log('Live-event collection:',live.length);return{targets:channels.length,search:found.length,live:live.length};}
-async function main(){if(process.env.RUN_ON_STARTUP!=='false')await run();if(process.env.START_HTTP==='true'){const app=express();app.get('/',(_,res)=>res.json({service:'search-channels',status:'ok'}));app.get('/health',(_,res)=>res.json({ok:true}));app.listen(config.PORT,'0.0.0.0');}}
+async function main(){
+  const startHttp=process.env.START_HTTP==='true'||process.env.RENDER_SERVICE_TYPE==='web';
+  if(startHttp){
+    const app=express();
+    let state='starting',lastResult=null,lastError=null;
+    app.get('/',(_,res)=>res.json({service:'search-channels',status:state,lastResult,lastError}));
+    app.get('/health',(_,res)=>res.status(state==='error'?503:200).json({ok:state!=='error',status:state,lastResult,lastError}));
+    app.listen(config.PORT,'0.0.0.0',()=>console.log('HTTP listening on '+config.PORT));
+    if(process.env.RUN_ON_STARTUP!=='false'){
+      state='running';
+      run().then(result=>{state='completed';lastResult=result;console.log('Collection completed:',JSON.stringify(result));}).catch(error=>{state='error';lastError=error.message;console.error(error.stack||error.message);});
+    } else state='idle';
+    return;
+  }
+  if(process.env.RUN_ON_STARTUP!=='false')await run();
+}
 main().catch(e=>{console.error(e.stack||e.message);process.exit(1);});
