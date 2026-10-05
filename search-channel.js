@@ -7,7 +7,7 @@ const gh=axios.create({
   baseURL:'https://api.github.com',
   timeout:30000,
   headers:{
-    ...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`:{}),
+    ...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`} : {}),
     Accept:'application/vnd.github+json',
     'X-GitHub-Api-Version':'2022-11-28',
     'User-Agent':config.USER_AGENT
