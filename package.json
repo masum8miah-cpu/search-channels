@@ -1,0 +1,9 @@
+{
+  "name":"search-channels",
+  "version":"1.0.0",
+  "private":true,
+  "main":"search-channel.js",
+  "scripts":{"start":"node search-channel.js","collect":"node search-channel.js"},
+  "engines":{"node":">=20"},
+  "dependencies":{"axios":"^1.11.0","dotenv":"^17.2.1","express":"^5.1.0"}
+}
