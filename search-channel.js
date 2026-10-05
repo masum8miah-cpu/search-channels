@@ -7,7 +7,7 @@ const gh=axios.create({
   baseURL:'https://api.github.com',
   timeout:30000,
   headers:{
-    ...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`}:{}),
+    ...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`:{}),
     Accept:'application/vnd.github+json',
     'X-GitHub-Api-Version':'2022-11-28',
     'User-Agent':config.USER_AGENT
@@ -33,7 +33,7 @@ function parseM3U(text){
     if(!line)continue;
     if(line.startsWith('#EXTINF')){meta=line;continue;}
     if(line.startsWith('#'))continue;
-    if(/^https?:\\/\\//i.test(line)){
+    if(/^https?:\/\//i.test(line)){
       const comma=meta.indexOf(',');
       out.push({
         name:comma>=0?meta.slice(comma+1).trim():'Unknown',
@@ -47,10 +47,10 @@ function parseM3U(text){
 }
 
 function extractUrls(text){
-  const urls=String(text||'').match(/https?:\\/\\/[^\\s"'<>]+/gi)||[];
+  const urls=String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[];
   return urls
     .map(u=>u.replace(/[),.;]+$/,''))
-    .filter(u=>/\\.m3u8?(?:[?#]|$)|\\.ts(?:[?#]|$)/i.test(u));
+    .filter(u=>/\.m3u8?(?:[?#]|$)|\.ts(?:[?#]|$)/i.test(u));
 }
 
 async function targetFile(path){
@@ -191,11 +191,17 @@ async function writeTarget(path,content,message){
 
 async function run(){
   if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');
+
+  // Always fetch the current Brightis.m3u at the beginning of every run.
+  // The latest file is the only baseline; additions/removals/renames therefore
+  // automatically change the target channel set for this collection cycle.
   const source=await targetFile(config.SOURCE_PLAYLIST);
   const channels=parseM3U(source.content);
   if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);
 
+  console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);
   console.log('Target channel count:',channels.length);
+
   let found=[];
   for(let i=0;i<channels.length;i++){
     console.log(`[${i+1}/${channels.length}] ${channels[i].name}`);
@@ -213,7 +219,9 @@ async function run(){
 }
 
 async function main(){
+  // Each server/process start performs one complete collection.
   if(process.env.RUN_ON_STARTUP!=='false')await run();
+
   if(process.env.START_HTTP==='true'){
     const app=express();
     app.get('/',(_,res)=>res.json({service:'search-channels',status:'ok'}));
@@ -221,4 +229,5 @@ async function main(){
     app.listen(config.PORT,'0.0.0.0');
   }
 }
+
 main().catch(e=>{console.error(e.stack||e.message);process.exit(1);});
