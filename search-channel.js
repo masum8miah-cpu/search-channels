@@ -4,7 +4,7 @@ const express=require('express');
 const config=require('./config');
 
 const gh=axios.create({
-  baseURL:'https://api.github.com',timeout:30000,
+  baseURL:'https://api.github.com',timeout:config.GITHUB_TIMEOUT_MS,
   headers:{...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`}:{}),Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':config.USER_AGENT}
 });
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -12,19 +12,96 @@ function unique(items){const seen=new Set(),out=[];for(const x of items){const k
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
 function extractUrls(text){return (String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')).filter(u=>/\.(?:m3u8?|ts)(?:[?#]|$)/i.test(u));}
 async function targetFile(path){const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);return{sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};}
-async function githubSearch(query){if(!config.GITHUB_ENABLED||!config.GITHUB_TOKEN)return[];try{const r=await gh.get('/search/code',{params:{q:query,per_page:config.MAX_RESULTS_PER_CHANNEL}});const out=[];for(const item of r.data.items||[]){try{const b=await gh.get(item.url);const content=b.data.content?Buffer.from(b.data.content,'base64').toString('utf8'):'';for(const url of extractUrls(content))out.push({url,source:item.html_url,name:item.name});}catch{}}return out;}catch(e){console.warn('GitHub search:',e.response?.data?.message||e.message);return[];}}
+async function githubSearch(query){
+  if(!config.GITHUB_ENABLED||!config.GITHUB_TOKEN)return[];
+  try{
+    const r=await gh.get('/search/code',{params:{q:query,per_page:config.MAX_RESULTS_PER_CHANNEL}});
+    const items=r.data.items||[];
+    const chunks=[];
+    for(let i=0;i<items.length;i+=4){
+      const batch=items.slice(i,i+4);
+      const results=await Promise.allSettled(batch.map(async item=>{
+        let content=(item.text_matches||[]).map(x=>x.fragment||'').join('\n');
+        try{
+          const b=await gh.get(item.url);
+          if(b.data.content)content+='\n'+Buffer.from(b.data.content,'base64').toString('utf8');
+        }catch{}
+        return {item,content};
+      }));
+      for(const result of results)if(result.status==='fulfilled'){
+        const {item,content}=result.value;
+        for(const url of extractUrls(content))chunks.push({url,source:item.html_url,name:item.name});
+      }
+    }
+    return unique(chunks);
+  }catch(e){
+    console.warn('GitHub search:',e.response?.data?.message||e.message);
+    return[];
+  }
+}
 async function firecrawlSearch(query){if(!config.FIRECRAWL_ENABLED)return[];try{const headers={'Content-Type':'application/json'};if(config.FIRECRAWL_API_KEY)headers.Authorization=`Bearer ${config.FIRECRAWL_API_KEY}`;const r=await axios.post('https://api.firecrawl.dev/v2/search',{query,limit:config.FIRECRAWL_RESULTS,sources:['web'],scrapeOptions:{formats:['markdown']}},{timeout:config.FIRECRAWL_TIMEOUT_MS,headers});const out=[];for(const item of r.data.data?.web||[]){const text=[item.title,item.description,item.url,item.markdown].join(' ');for(const url of extractUrls(text))out.push({url,source:item.url,name:item.title||'Web result'});}return unique(out);}catch(e){console.warn('Firecrawl search:',e.response?.data?.error||e.message);return[];}}
 async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));for(const stream of extractUrls(url))out.push({url:stream,source:'DuckDuckGo',name:'Web result'});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
 async function freeWebSearch(query){const out=[];if(config.FIRECRAWL_ENABLED)out.push(...await firecrawlSearch(query));if(out.length<config.MIN_WEB_RESULTS)out.push(...await duckduckgoSearch(query));return unique(out);}
 async function googleSearchLegacy(query){if(!config.GOOGLE_ENABLED||!config.GOOGLE_API_KEY||!config.GOOGLE_CX)return[];try{const r=await axios.get('https://www.googleapis.com/customsearch/v1',{params:{key:config.GOOGLE_API_KEY,cx:config.GOOGLE_CX,q:query,num:10},timeout:20000});const out=[];for(const item of r.data.items||[])for(const url of extractUrls([item.title,item.snippet,item.link].join(' ')))out.push({url,source:item.link,name:item.title});return out;}catch(e){console.warn('Google legacy search:',e.response?.data?.error?.message||e.message);return[];}}
-async function webSearch(query){const out=[];out.push(...await freeWebSearch(query));out.push(...await googleSearchLegacy(query));return unique(out);}
+async function webSearch(query){const [web,google]=await Promise.all([freeWebSearch(query),googleSearchLegacy(query)]);return unique([...web,...google]);}
 async function isOnline(url){try{const r=await axios.get(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,responseType:'stream',validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT,Accept:'*/*'}});r.data.destroy();return true;}catch{try{const r=await axios.head(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT}});return r.status>=200&&r.status<400;}catch{return false;}}}
 function setName(meta,name,group){let m=meta||'#EXTINF:-1';m=m.replace(/,(.*)$/ ,','+name);if(!m.includes(','))m+=','+name;if(group&&!/group-title=/i.test(m))m=m.replace('#EXTINF:-1','#EXTINF:-1 group-title="'+group+'"');return m;}
-async function collectChannel(channel){const queries=[`"${channel.name}" m3u8`,`"${channel.name}" stream m3u8`];let candidates=[];for(const q of queries){candidates.push(...await githubSearch(q));candidates.push(...await webSearch(q+' live'));await sleep(config.SEARCH_DELAY_MS);}candidates=unique(candidates).filter(x=>x.url!==channel.url);const good=[];for(const c of candidates){if(await isOnline(c.url))good.push({name:channel.name,url:c.url,meta:setName(channel.meta,channel.name,'Search Collection'),source:c.source});if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;}return good;}
-async function collectLive(){let candidates=[];for(const q of config.LIVE_QUERIES){candidates.push(...await githubSearch(q));candidates.push(...await webSearch(q));await sleep(config.SEARCH_DELAY_MS);}const good=[];for(const c of unique(candidates)){if(await isOnline(c.url)){const name=c.name||'Live Event Channel';good.push({name,url:c.url,meta:'#EXTINF:-1 tvg-name="'+name+'" group-title="Live Events",'+name,source:c.source});}if(good.length>=config.MAX_LIVE_RESULTS)break;}return good;}
+async function collectChannel(channel){
+  const queries=[`"${channel.name}" m3u8`,`"${channel.name}" stream m3u8`];
+  const batches=await Promise.all(queries.map(async q=>[...(await githubSearch(q)),...(await webSearch(q+' live'))]));
+  let candidates=unique(batches.flat()).filter(x=>x.url!==channel.url).slice(0,40);
+  const good=[];
+  for(let i=0;i<candidates.length;i+=config.URL_CHECK_CONCURRENCY){
+    const batch=candidates.slice(i,i+config.URL_CHECK_CONCURRENCY);
+    const results=await Promise.all(batch.map(async c=>({c,ok:await isOnline(c.url)})));
+    for(const {c,ok} of results)if(ok){
+      good.push({name:channel.name,url:c.url,meta:setName(channel.meta,channel.name,'Search Collection'),source:c.source});
+      if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
+    }
+    if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
+  }
+  return good;
+}
+async function collectLive(){
+  const batches=await Promise.all(config.LIVE_QUERIES.map(async q=>[...(await githubSearch(q)),...(await webSearch(q))]));
+  const candidates=unique(batches.flat());
+  const good=[];
+  for(let i=0;i<candidates.length;i+=config.URL_CHECK_CONCURRENCY){
+    const batch=candidates.slice(i,i+config.URL_CHECK_CONCURRENCY);
+    const results=await Promise.all(batch.map(async c=>({c,ok:await isOnline(c.url)})));
+    for(const {c,ok} of results)if(ok){
+      const name=c.name||'Live Event Channel';
+      good.push({name,url:c.url,meta:'#EXTINF:-1 tvg-name="'+name+'" group-title="Live Events",'+name,source:c.source});
+      if(good.length>=config.MAX_LIVE_RESULTS)break;
+    }
+    if(good.length>=config.MAX_LIVE_RESULTS)break;
+  }
+  return good;
+}
 function render(items){return '#EXTM3U\n'+items.map(x=>x.meta+'\n'+x.url).join('\n')+'\n';}
 async function writeTarget(path,content,message){let sha=null;try{sha=(await targetFile(path)).sha;}catch(e){if(e.response?.status!==404)throw e;}const body={message,content:Buffer.from(content,'utf8').toString('base64'),branch:config.TARGET_BRANCH};if(sha)body.sha=sha;await gh.put(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`,body);}
-async function run(){if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');const source=await targetFile(config.SOURCE_PLAYLIST);const channels=parseM3U(source.content);if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);console.log('Target channel count:',channels.length);console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];for(let i=0;i<channels.length;i++){console.log(`[${i+1}/${channels.length}] ${channels[i].name}`);found.push(...await collectChannel(channels[i]));}found=unique(found);await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);console.log('Search collection:',found.length);const live=unique(await collectLive());await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);console.log('Live-event collection:',live.length);return{targets:channels.length,search:found.length,live:live.length};}
+async function run(){if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');const source=await targetFile(config.SOURCE_PLAYLIST);const channels=parseM3U(source.content);if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);console.log('Target channel count:',channels.length);console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];
+  let nextIndex=0, completed=0;
+  async function worker(){
+    while(true){
+      const i=nextIndex++;
+      if(i>=channels.length)return;
+      const channel=channels[i];
+      console.log(`[${i+1}/${channels.length}] START ${channel.name}`);
+      const before=found.length;
+      try{
+        const result=await collectChannel(channel);
+        found.push(...result);
+        completed++;
+        console.log(`[${i+1}/${channels.length}] DONE ${channel.name} (+${result.length}, total=${found.length}, completed=${completed})`);
+      }catch(e){
+        completed++;
+        console.warn(`[${i+1}/${channels.length}] ERROR ${channel.name}: ${e.message}`);
+      }
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(config.CHANNEL_CONCURRENCY,channels.length)},worker));
+  found=unique(found);await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);console.log('Search collection:',found.length);const live=unique(await collectLive());await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);console.log('Live-event collection:',live.length);return{targets:channels.length,search:found.length,live:live.length};}
 async function main(){
   const startHttp=process.env.START_HTTP==='true'||process.env.RENDER_SERVICE_TYPE==='web';
   if(startHttp){
