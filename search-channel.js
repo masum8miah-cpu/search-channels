@@ -271,7 +271,7 @@ async function run(){
   console.log('Target channel count:',channels.length);
   console.log('Search sources:',[
     config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',
-    config.BRAVE_ENABLED&&config.BRAVE_API_KEY?'Brave Web':'',
+    config.BRAVE_ENABLED&&config.BRAVE_API_KEY?'free web search':'',
     config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''
   ].filter(Boolean).join(', ')||'none');
 
