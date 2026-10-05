@@ -23,9 +23,19 @@ services:
         value: সার্চ কালেকশন.m3u
       - key: LIVE_OUTPUT
         value: live-event-channel-colector.m3u
+      - key: BRAVE_ENABLED
+        value: "true"
+      - key: BRAVE_API_KEY
+        sync: false
+      - key: BRAVE_RESULTS
+        value: "5"
+      - key: BRAVE_FETCH_RESULTS
+        value: "3"
+      - key: BRAVE_COUNTRY
+        value: BD
+      - key: BRAVE_SEARCH_LANG
+        value: en
+      - key: GOOGLE_ENABLED
+        value: "false"
       - key: GITHUB_TOKEN
-        sync: false
-      - key: GOOGLE_API_KEY
-        sync: false
-      - key: GOOGLE_CX
         sync: false
