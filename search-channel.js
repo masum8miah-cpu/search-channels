@@ -7,7 +7,7 @@ const gh=axios.create({
   baseURL:'https://api.github.com',
   timeout:30000,
   headers:{
-    ...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`} : {}),
+    ...(config.GITHUB_TOKEN?{Authorization:\`Bearer \${config.GITHUB_TOKEN}\`} : {}),
     Accept:'application/vnd.github+json',
     'X-GitHub-Api-Version':'2022-11-28',
     'User-Agent':config.USER_AGENT
@@ -50,11 +50,11 @@ function extractUrls(text){
   const urls=String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[];
   return urls
     .map(u=>u.replace(/[),.;]+$/,''))
-    .filter(u=>/\.m3u8?(?:[?#]|$)|\.ts(?:[?#]|$)/i.test(u));
+    .filter(u=>/\.(?:m3u8?|ts)(?:[?#]|$)/i.test(u));
 }
 
 async function targetFile(path){
-  const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);
+  const r=await gh.get(\`/repos/\${config.GITHUB_OWNER}/\${config.TARGET_REPO}/contents/\${encodeURIComponent(path)}\`);
   return {sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};
 }
 
@@ -77,7 +77,55 @@ async function githubSearch(query){
   }
 }
 
-async function googleSearch(query){
+async function braveSearch(query){
+  if(!config.BRAVE_ENABLED||!config.BRAVE_API_KEY)return [];
+  try{
+    const r=await axios.get('https://api.search.brave.com/res/v1/web/search',{
+      params:{
+        q:query,
+        count:config.BRAVE_RESULTS,
+        country:config.BRAVE_COUNTRY,
+        search_lang:config.BRAVE_SEARCH_LANG
+      },
+      timeout:20000,
+      headers:{
+        Accept:'application/json',
+        'Accept-Encoding':'gzip',
+        'X-Subscription-Token':config.BRAVE_API_KEY
+      }
+    });
+
+    const out=[];
+    for(const item of r.data.web?.results||[]){
+      const text=[item.title,item.description,item.url].join(' ');
+      for(const url of extractUrls(text)){
+        out.push({url,source:item.url,name:item.title||'Web result'});
+      }
+    }
+
+    const pages=(r.data.web?.results||[]).slice(0,config.BRAVE_FETCH_RESULTS);
+    for(const item of pages){
+      if(!/^https?:\/\//i.test(item.url||''))continue;
+      try{
+        const p=await axios.get(item.url,{
+          timeout:config.WEB_PAGE_TIMEOUT_MS,
+          maxRedirects:5,
+          responseType:'text',
+          validateStatus:s=>s>=200&&s<400,
+          headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,text/plain,*/*'}
+        });
+        for(const url of extractUrls(p.data))out.push({url,source:item.url,name:item.title||'Web page'});
+      }catch{}
+    }
+    return unique(out);
+  }catch(e){
+    const msg=e.response?.data?.message||e.response?.data?.error||e.message;
+    console.warn('Brave search:',msg);
+    return [];
+  }
+}
+
+async function googleSearchLegacy(query){
   if(!config.GOOGLE_ENABLED||!config.GOOGLE_API_KEY||!config.GOOGLE_CX)return [];
   try{
     const r=await axios.get('https://www.googleapis.com/customsearch/v1',{
@@ -92,9 +140,16 @@ async function googleSearch(query){
     }
     return out;
   }catch(e){
-    console.warn('Google search:',e.response?.data?.error?.message||e.message);
+    console.warn('Google legacy search:',e.response?.data?.error?.message||e.message);
     return [];
   }
+}
+
+async function webSearch(query){
+  const out=[];
+  out.push(...await braveSearch(query));
+  out.push(...await googleSearchLegacy(query));
+  return unique(out);
 }
 
 async function isOnline(url){
@@ -128,13 +183,13 @@ function setName(meta,name,group){
 
 async function collectChannel(channel){
   const queries=[
-    `"${channel.name}" m3u8`,
-    `"${channel.name}" stream m3u8`
+    \`"\${channel.name}" m3u8\`,
+    \`"\${channel.name}" stream m3u8\`
   ];
   let candidates=[];
   for(const q of queries){
     candidates.push(...await githubSearch(q));
-    candidates.push(...await googleSearch(q+' live'));
+    candidates.push(...await webSearch(q+' live'));
     await sleep(config.SEARCH_DELAY_MS);
   }
   candidates=unique(candidates).filter(x=>x.url!==channel.url);
@@ -157,7 +212,7 @@ async function collectLive(){
   let candidates=[];
   for(const q of config.LIVE_QUERIES){
     candidates.push(...await githubSearch(q));
-    candidates.push(...await googleSearch(q));
+    candidates.push(...await webSearch(q));
     await sleep(config.SEARCH_DELAY_MS);
   }
   const good=[];
@@ -186,40 +241,41 @@ async function writeTarget(path,content,message){
   catch(e){if(e.response?.status!==404)throw e;}
   const body={message,content:Buffer.from(content,'utf8').toString('base64'),branch:config.TARGET_BRANCH};
   if(sha)body.sha=sha;
-  await gh.put(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`,body);
+  await gh.put(\`/repos/\${config.GITHUB_OWNER}/\${config.TARGET_REPO}/contents/\${encodeURIComponent(path)}\`,body);
 }
 
 async function run(){
   if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');
 
-  // Always fetch the current Brightis.m3u at the beginning of every run.
-  // The latest file is the only baseline; additions/removals/renames therefore
-  // automatically change the target channel set for this collection cycle.
   const source=await targetFile(config.SOURCE_PLAYLIST);
   const channels=parseM3U(source.content);
   if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);
 
   console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);
   console.log('Target channel count:',channels.length);
+  console.log('Search sources:',[
+    config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',
+    config.BRAVE_ENABLED&&config.BRAVE_API_KEY?'Brave Web':'',
+    config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''
+  ].filter(Boolean).join(', ')||'none');
 
   let found=[];
   for(let i=0;i<channels.length;i++){
-    console.log(`[${i+1}/${channels.length}] ${channels[i].name}`);
+    console.log(\`[\${i+1}/\${channels.length}] \${channels[i].name}\`);
     found.push(...await collectChannel(channels[i]));
   }
   found=unique(found);
-  await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);
+  await writeTarget(config.SEARCH_OUTPUT,render(found),\`Search channel collection: \${found.length} online URLs\`);
   console.log('Search collection:',found.length);
 
   const live=unique(await collectLive());
-  await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);
+  await writeTarget(config.LIVE_OUTPUT,render(live),\`Live event channel collection: \${live.length} online URLs\`);
   console.log('Live-event collection:',live.length);
 
   return {targets:channels.length,search:found.length,live:live.length};
 }
 
 async function main(){
-  // Each server/process start performs one complete collection.
   if(process.env.RUN_ON_STARTUP!=='false')await run();
 
   if(process.env.START_HTTP==='true'){
