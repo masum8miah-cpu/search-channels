@@ -23,3 +23,12 @@ Google collection requires both `GOOGLE_API_KEY` and `GOOGLE_CX`. Without them, 
 ## Render
 
 This repository includes a Render Cron Blueprint. The cron runs every two hours with a staggered minute. Change the schedule in `render.yaml` if a different frequency is wanted.
+
+
+## Update cycle
+
+- Every process start performs one complete collection run.
+- At the start of every run, the collector fetches the **latest** `my-ip-tv/main/Brightis.m3u` and parses it as the current baseline/target channel list.
+- If Brightis.m3u gains, removes, or renames channels, the next run automatically follows the new list; it does not use a stale local baseline.
+- Render Cron starts the job every **3 hours**.
+- The sports/live-event collector runs in the same cycle and writes its results to `live-event-channel-colector.m3u`.
