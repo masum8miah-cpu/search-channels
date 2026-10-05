@@ -15,6 +15,7 @@ module.exports={
   LIVE_OUTPUT:process.env.LIVE_OUTPUT||'live-event-channel-colector.m3u',
 
   FIRECRAWL_ENABLED:bool(process.env.FIRECRAWL_ENABLED,true),
+  FIRECRAWL_API_KEY:process.env.FIRECRAWL_API_KEY||'',
   FIRECRAWL_RESULTS:num(process.env.FIRECRAWL_RESULTS,5),
   FIRECRAWL_TIMEOUT_MS:num(process.env.FIRECRAWL_TIMEOUT_MS,30000),
   DDG_ENABLED:bool(process.env.DDG_ENABLED,true),
