@@ -103,9 +103,9 @@ async function getSearxInstances(){
       const source=r.data?.instances||r.data||{};
       const entries=Array.isArray(source)?source:Object.entries(source).map(([url,value])=>({url,...(value||{})}));
       return entries.map(x=>({
-        url:String(x.url||'').replace(/\\/$/,''),
+        url:String(x.url||'').replace(/\/$/,'')
         uptime:Number(x.http?.uptime??x.uptime??1)
-      })).filter(x=>/^https:\\/\\//i.test(x.url)&&x.uptime>=0.9);
+      })).filter(x=>/^https:\/\//i.test(x.url)&&x.uptime>=0.9);
     }catch(e){
       console.warn('SearXNG instance list:',e.message);
       return [];
@@ -116,13 +116,13 @@ async function getSearxInstances(){
 
 function parseSearxHtml(html){
   const out=[];
-  const links=String(html||'').match(/<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi)||[];
+  const links=String(html||'').match(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)||[];
   for(const raw of links){
-    const m=raw.match(/href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/i);
+    const m=raw.match(/href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
     if(!m)continue;
     let href=m[1];
     try{href=decodeURIComponent(href);}catch{}
-    const title=m[2].replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/\\s+/g,' ').trim();
+    const title=m[2].replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
     for(const url of extractUrls(href+' '+title))out.push({url,source:'SearXNG',name:title||'SearXNG result'});
   }
   return unique(out);
