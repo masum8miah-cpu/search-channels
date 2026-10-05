@@ -25,6 +25,8 @@ services:
         value: live-event-channel-colector.m3u
       - key: FIRECRAWL_ENABLED
         value: "true"
+      - key: FIRECRAWL_API_KEY
+        sync: false
       - key: FIRECRAWL_RESULTS
         value: "5"
       - key: DDG_ENABLED
@@ -33,5 +35,7 @@ services:
         value: "3"
       - key: GOOGLE_ENABLED
         value: "false"
+      - key: GITHUB_ENABLED
+        value: "true"
       - key: GITHUB_TOKEN
         sync: false
