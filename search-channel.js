@@ -77,52 +77,68 @@ async function githubSearch(query){
   }
 }
 
-async function braveSearch(query){
-  if(!config.BRAVE_ENABLED||!config.BRAVE_API_KEY)return [];
+async function firecrawlSearch(query){
+  if(!config.FIRECRAWL_ENABLED)return [];
   try{
-    const r=await axios.get('https://api.search.brave.com/res/v1/web/search',{
-      params:{
-        q:query,
-        count:config.BRAVE_RESULTS,
-        country:config.BRAVE_COUNTRY,
-        search_lang:config.BRAVE_SEARCH_LANG
-      },
-      timeout:20000,
-      headers:{
-        Accept:'application/json',
-        'Accept-Encoding':'gzip',
-        'X-Subscription-Token':config.BRAVE_API_KEY
-      }
+    const r=await axios.post('https://api.firecrawl.dev/v2/search',{
+      query,
+      limit:config.FIRECRAWL_RESULTS,
+      sources:['web'],
+      scrapeOptions:{formats:['markdown']}
+    },{
+      timeout:config.FIRECRAWL_TIMEOUT_MS,
+      headers:{'Content-Type':'application/json'}
     });
-
     const out=[];
-    for(const item of r.data.web?.results||[]){
-      const text=[item.title,item.description,item.url].join(' ');
+    for(const item of r.data.data?.web||[]){
+      const text=[item.title,item.description,item.url,item.markdown].join(' ');
       for(const url of extractUrls(text)){
         out.push({url,source:item.url,name:item.title||'Web result'});
       }
     }
+    return unique(out);
+  }catch(e){
+    console.warn('Firecrawl search:',e.response?.data?.error||e.message);
+    return [];
+  }
+}
 
-    const pages=(r.data.web?.results||[]).slice(0,config.BRAVE_FETCH_RESULTS);
-    for(const item of pages){
-      if(!/^https?:\/\//i.test(item.url||''))continue;
+async function duckduckgoSearch(query){
+  if(!config.DDG_ENABLED)return [];
+  try{
+    const r=await axios.get('https://html.duckduckgo.com/html/',{
+      params:{q:query},
+      timeout:config.DDG_TIMEOUT_MS,
+      headers:{
+        'User-Agent':config.USER_AGENT,
+        Accept:'text/html,application/xhtml+xml'
+      },
+      responseType:'text'
+    });
+    const html=String(r.data||'');
+    const out=[];
+    const links=html.match(/uddg=([^&"']+)/gi)||[];
+    for(const raw of links){
       try{
-        const p=await axios.get(item.url,{
-          timeout:config.WEB_PAGE_TIMEOUT_MS,
-          maxRedirects:5,
-          responseType:'text',
-          validateStatus:s=>s>=200&&s<400,
-          headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,text/plain,*/*'}
-        });
-        for(const url of extractUrls(p.data))out.push({url,source:item.url,name:item.title||'Web page'});
+        const url=decodeURIComponent(raw.replace(/^uddg=/i,''));
+        for(const stream of extractUrls(url))out.push({url:stream,source:'DuckDuckGo',name:'Web result'});
       }catch{}
     }
     return unique(out);
   }catch(e){
-    const msg=e.response?.data?.message||e.response?.data?.error||e.message;
-    console.warn('Brave search:',msg);
+    console.warn('DuckDuckGo search:',e.message);
     return [];
   }
+}
+
+async function freeWebSearch(query){
+  // Keyless Firecrawl is the structured web-search path. DuckDuckGo HTML is
+  // a no-key fallback so the collector can still operate when keyless quotas
+  // are exhausted or temporarily unavailable.
+  const out=[];
+  if(config.FIRECRAWL_ENABLED)out.push(...await firecrawlSearch(query));
+  if(out.length<config.MIN_WEB_RESULTS)out.push(...await duckduckgoSearch(query));
+  return unique(out);
 }
 
 async function googleSearchLegacy(query){
@@ -147,7 +163,7 @@ async function googleSearchLegacy(query){
 
 async function webSearch(query){
   const out=[];
-  out.push(...await braveSearch(query));
+  out.push(...await freeWebSearch(query));
   out.push(...await googleSearchLegacy(query));
   return unique(out);
 }
