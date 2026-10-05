@@ -14,12 +14,12 @@ module.exports={
   SEARCH_OUTPUT:process.env.SEARCH_OUTPUT||'সার্চ কালেকশন.m3u',
   LIVE_OUTPUT:process.env.LIVE_OUTPUT||'live-event-channel-colector.m3u',
 
-  BRAVE_API_KEY:process.env.BRAVE_API_KEY||'',
-  BRAVE_ENABLED:bool(process.env.BRAVE_ENABLED,true),
-  BRAVE_RESULTS:num(process.env.BRAVE_RESULTS,5),
-  BRAVE_FETCH_RESULTS:num(process.env.BRAVE_FETCH_RESULTS,3),
-  BRAVE_COUNTRY:process.env.BRAVE_COUNTRY||'BD',
-  BRAVE_SEARCH_LANG:process.env.BRAVE_SEARCH_LANG||'en',
+  FIRECRAWL_ENABLED:bool(process.env.FIRECRAWL_ENABLED,true),
+  FIRECRAWL_RESULTS:num(process.env.FIRECRAWL_RESULTS,5),
+  FIRECRAWL_TIMEOUT_MS:num(process.env.FIRECRAWL_TIMEOUT_MS,30000),
+  DDG_ENABLED:bool(process.env.DDG_ENABLED,true),
+  DDG_TIMEOUT_MS:num(process.env.DDG_TIMEOUT_MS,15000),
+  MIN_WEB_RESULTS:num(process.env.MIN_WEB_RESULTS,3),
 
   GOOGLE_API_KEY:process.env.GOOGLE_API_KEY||'',
   GOOGLE_CX:process.env.GOOGLE_CX||'',
