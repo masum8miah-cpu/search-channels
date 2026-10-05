@@ -6,7 +6,7 @@ services:
     plan: 0.5c-512mb
     buildCommand: npm install
     startCommand: npm start
-    schedule: "17 */2 * * *"
+    schedule: "17 */3 * * *"
     autoDeployTrigger: commit
     envVars:
       - key: NODE_ENV
