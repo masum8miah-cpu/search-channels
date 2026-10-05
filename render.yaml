@@ -1,12 +1,12 @@
 services:
-  - type: cron
+  - type: web
     name: search-channels
     runtime: node
     region: singapore
-    plan: 0.5c-512mb
+    plan: free
     buildCommand: npm install
-    startCommand: npm run collect
-    schedule: "17 */3 * * *"
+    startCommand: npm start
+    healthCheckPath: /health
     autoDeployTrigger: commit
     envVars:
       - key: NODE_ENV
