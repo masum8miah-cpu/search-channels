@@ -1,0 +1,31 @@
+services:
+  - type: cron
+    name: search-channels
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: npm install
+    startCommand: npm start
+    schedule: "17 */2 * * *"
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GITHUB_OWNER
+        value: masum8miah-cpu
+      - key: TARGET_REPO
+        value: my-ip-tv
+      - key: TARGET_BRANCH
+        value: main
+      - key: SOURCE_PLAYLIST
+        value: Brightis.m3u
+      - key: SEARCH_OUTPUT
+        value: সার্চ কালেকশন.m3u
+      - key: LIVE_OUTPUT
+        value: live-event-channel-colector.m3u
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GOOGLE_CX
+        sync: false
