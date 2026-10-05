@@ -12,10 +12,49 @@ function unique(items){const seen=new Set(),out=[];for(const x of items){const k
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
 function extractUrls(text){return (String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')).filter(u=>/\.(?:m3u8?|ts)(?:[?#]|$)/i.test(u));}
 async function targetFile(path){const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);return{sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};}
-async function githubSearch(query){
+let githubCodeSearchPausedUntil=0;
+let githubCodeSearchQueue=Promise.resolve();
+const githubCodeSearchCache=new Map();
+let githubCodeSearchPauseLoggedUntil=0;
+
+function githubRateLimitWaitMs(headers){
+  const retryAfter=Number(headers?.['retry-after']);
+  if(Number.isFinite(retryAfter)&&retryAfter>0)return Math.min(retryAfter*1000,config.GITHUB_CODE_SEARCH_RETRY_MAX_MS);
+  const reset=Number(headers?.['x-ratelimit-reset']);
+  if(Number.isFinite(reset)&&reset>0)return Math.max(1000,Math.min(reset*1000-Date.now()+1000,config.GITHUB_CODE_SEARCH_RETRY_MAX_MS));
+  return Math.min(60000,config.GITHUB_CODE_SEARCH_RETRY_MAX_MS);
+}
+
+async function waitForGithubCodeSearch(){
+  const wait=Math.max(0,githubCodeSearchPausedUntil-Date.now());
+  if(wait>0){
+    if(githubCodeSearchPauseLoggedUntil!==githubCodeSearchPausedUntil){
+      githubCodeSearchPauseLoggedUntil=githubCodeSearchPausedUntil;
+      console.log('GitHub code search rate limit: waiting '+Math.ceil(wait/1000)+'s before continuing.');
+    }
+    await sleep(wait);
+  }
+}
+
+function queueGithubCodeSearch(query){
+  const run=githubCodeSearchQueue.then(async()=>{
+    await waitForGithubCodeSearch();
+    return githubSearch(query);
+  });
+  githubCodeSearchQueue=run.catch(()=>{});
+  return run;
+}
+
+async function githubSearch(query,attempt=0){
   if(!config.GITHUB_ENABLED||!config.GITHUB_TOKEN)return[];
+  const key=String(query).trim().toLowerCase();
+  if(githubCodeSearchCache.has(key))return githubCodeSearchCache.get(key);
+  await waitForGithubCodeSearch();
   try{
     const r=await gh.get('/search/code',{params:{q:query,per_page:config.MAX_RESULTS_PER_CHANNEL}});
+    const remaining=Number(r.headers?.['x-ratelimit-remaining']);
+    const reset=Number(r.headers?.['x-ratelimit-reset']);
+    if(Number.isFinite(remaining)&&remaining<=0&&Number.isFinite(reset))githubCodeSearchPausedUntil=Math.max(githubCodeSearchPausedUntil,reset*1000+1000);
     const items=r.data.items||[];
     const chunks=[];
     for(let i=0;i<items.length;i+=4){
@@ -33,8 +72,19 @@ async function githubSearch(query){
         for(const url of extractUrls(content))chunks.push({url,source:item.html_url,name:item.name});
       }
     }
-    return unique(chunks);
+    const result=unique(chunks);
+    githubCodeSearchCache.set(key,result);
+    await sleep(config.GITHUB_CODE_SEARCH_DELAY_MS);
+    return result;
   }catch(e){
+    const status=e.response?.status;
+    if((status===403||status===429)&&attempt<1){
+      const wait=githubRateLimitWaitMs(e.response?.headers||{});
+      githubCodeSearchPausedUntil=Math.max(githubCodeSearchPausedUntil,Date.now()+wait);
+      console.warn('GitHub code search rate-limited; pausing for '+Math.ceil(wait/1000)+'s.');
+      await waitForGithubCodeSearch();
+      return githubSearch(query,attempt+1);
+    }
     console.warn('GitHub search:',e.response?.data?.message||e.message);
     return[];
   }
@@ -47,9 +97,12 @@ async function webSearch(query){const [web,google]=await Promise.all([freeWebSea
 async function isOnline(url){try{const r=await axios.get(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,responseType:'stream',validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT,Accept:'*/*'}});r.data.destroy();return true;}catch{try{const r=await axios.head(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT}});return r.status>=200&&r.status<400;}catch{return false;}}}
 function setName(meta,name,group){let m=meta||'#EXTINF:-1';m=m.replace(/,(.*)$/ ,','+name);if(!m.includes(','))m+=','+name;if(group&&!/group-title=/i.test(m))m=m.replace('#EXTINF:-1','#EXTINF:-1 group-title="'+group+'"');return m;}
 async function collectChannel(channel){
-  const queries=[`"${channel.name}" m3u8`,`"${channel.name}" stream m3u8`];
-  const batches=await Promise.all(queries.map(async q=>[...(await githubSearch(q)),...(await webSearch(q+' live'))]));
-  let candidates=unique(batches.flat()).filter(x=>x.url!==channel.url).slice(0,40);
+  const query=`"${channel.name}" m3u8`;
+  const [githubCandidates,webCandidates]=await Promise.all([
+    queueGithubCodeSearch(query),
+    webSearch(query+' live')
+  ]);
+  let candidates=unique([...githubCandidates,...webCandidates]).filter(x=>x.url!==channel.url).slice(0,40);
   const good=[];
   for(let i=0;i<candidates.length;i+=config.URL_CHECK_CONCURRENCY){
     const batch=candidates.slice(i,i+config.URL_CHECK_CONCURRENCY);
@@ -63,7 +116,7 @@ async function collectChannel(channel){
   return good;
 }
 async function collectLive(){
-  const batches=await Promise.all(config.LIVE_QUERIES.map(async q=>[...(await githubSearch(q)),...(await webSearch(q))]));
+  const batches=await Promise.all(config.LIVE_QUERIES.map(async q=>[...(await queueGithubCodeSearch(q)),...(await webSearch(q))]));
   const candidates=unique(batches.flat());
   const good=[];
   for(let i=0;i<candidates.length;i+=config.URL_CHECK_CONCURRENCY){
