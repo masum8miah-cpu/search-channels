@@ -91,7 +91,79 @@ async function githubSearch(query,attempt=0){
 }
 async function firecrawlSearch(query){if(!config.FIRECRAWL_ENABLED)return[];try{const headers={'Content-Type':'application/json'};if(config.FIRECRAWL_API_KEY)headers.Authorization=`Bearer ${config.FIRECRAWL_API_KEY}`;const r=await axios.post('https://api.firecrawl.dev/v2/search',{query,limit:config.FIRECRAWL_RESULTS,sources:['web'],scrapeOptions:{formats:['markdown']}},{timeout:config.FIRECRAWL_TIMEOUT_MS,headers});const out=[];for(const item of r.data.data?.web||[]){const text=[item.title,item.description,item.url,item.markdown].join(' ');for(const url of extractUrls(text))out.push({url,source:item.url,name:item.title||'Web result'});}return unique(out);}catch(e){console.warn('Firecrawl search:',e.response?.data?.error||e.message);return[];}}
 async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));for(const stream of extractUrls(url))out.push({url:stream,source:'DuckDuckGo',name:'Web result'});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
-async function freeWebSearch(query){const out=[];if(config.FIRECRAWL_ENABLED)out.push(...await firecrawlSearch(query));if(out.length<config.MIN_WEB_RESULTS)out.push(...await duckduckgoSearch(query));return unique(out);}
+let searxInstancesPromise=null;
+const searxSearchCache=new Map();
+const SEARX_INSTANCE_LIST_URL='https://searx.space/data/instances.json';
+
+async function getSearxInstances(){
+  if(searxInstancesPromise)return searxInstancesPromise;
+  searxInstancesPromise=(async()=>{
+    try{
+      const r=await axios.get(SEARX_INSTANCE_LIST_URL,{timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
+      const source=r.data?.instances||r.data||{};
+      const entries=Array.isArray(source)?source:Object.entries(source).map(([url,value])=>({url,...(value||{})}));
+      return entries.map(x=>({
+        url:String(x.url||'').replace(/\\/$/,''),
+        uptime:Number(x.http?.uptime??x.uptime??1)
+      })).filter(x=>/^https:\\/\\//i.test(x.url)&&x.uptime>=0.9);
+    }catch(e){
+      console.warn('SearXNG instance list:',e.message);
+      return [];
+    }
+  })();
+  return searxInstancesPromise;
+}
+
+function parseSearxHtml(html){
+  const out=[];
+  const links=String(html||'').match(/<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi)||[];
+  for(const raw of links){
+    const m=raw.match(/href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/i);
+    if(!m)continue;
+    let href=m[1];
+    try{href=decodeURIComponent(href);}catch{}
+    const title=m[2].replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/\\s+/g,' ').trim();
+    for(const url of extractUrls(href+' '+title))out.push({url,source:'SearXNG',name:title||'SearXNG result'});
+  }
+  return unique(out);
+}
+
+async function searxngSearch(query){
+  const key=String(query).trim().toLowerCase();
+  if(searxSearchCache.has(key))return searxSearchCache.get(key);
+  const instances=(await getSearxInstances()).slice(0,8);
+  for(const instance of instances){
+    try{
+      const r=await axios.get(instance.url+'/search',{params:{q:query,format:'json',pageno:1},timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
+      const out=[];
+      for(const item of r.data?.results||[]){
+        for(const url of extractUrls([item.title,item.content,item.url].join(' ')))out.push({url,source:'SearXNG',name:item.title||'SearXNG result'});
+      }
+      const result=unique(out);
+      if(result.length){searxSearchCache.set(key,result);return result;}
+    }catch(e){
+      const status=e.response?.status;
+      if(status!==403&&status!==404&&status!==429&&status<500)console.warn('SearXNG:',e.message);
+      try{
+        if(status===403||status===404){
+          const r=await axios.get(instance.url+'/search',{params:{q:query},timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html'}});
+          const result=parseSearxHtml(r.data);
+          if(result.length){searxSearchCache.set(key,result);return result;}
+        }
+      }catch{}
+    }
+  }
+  searxSearchCache.set(key,[]);
+  return [];
+}
+
+async function freeWebSearch(query){
+  const out=[];
+  if(config.FIRECRAWL_ENABLED)out.push(...await firecrawlSearch(query));
+  if(out.length<config.MIN_WEB_RESULTS&&config.DDG_ENABLED)out.push(...await duckduckgoSearch(query));
+  if(out.length<config.MIN_WEB_RESULTS)out.push(...await searxngSearch(query));
+  return unique(out);
+}
 async function googleSearchLegacy(query){if(!config.GOOGLE_ENABLED||!config.GOOGLE_API_KEY||!config.GOOGLE_CX)return[];try{const r=await axios.get('https://www.googleapis.com/customsearch/v1',{params:{key:config.GOOGLE_API_KEY,cx:config.GOOGLE_CX,q:query,num:10},timeout:20000});const out=[];for(const item of r.data.items||[])for(const url of extractUrls([item.title,item.snippet,item.link].join(' ')))out.push({url,source:item.link,name:item.title});return out;}catch(e){console.warn('Google legacy search:',e.response?.data?.error?.message||e.message);return[];}}
 async function webSearch(query){const [web,google]=await Promise.all([freeWebSearch(query),googleSearchLegacy(query)]);return unique([...web,...google]);}
 async function isOnline(url){try{const r=await axios.get(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,responseType:'stream',validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT,Accept:'*/*'}});r.data.destroy();return true;}catch{try{const r=await axios.head(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT}});return r.status>=200&&r.status<400;}catch{return false;}}}
@@ -133,7 +205,7 @@ async function collectLive(){
 }
 function render(items){return '#EXTM3U\n'+items.map(x=>x.meta+'\n'+x.url).join('\n')+'\n';}
 async function writeTarget(path,content,message){let sha=null;try{sha=(await targetFile(path)).sha;}catch(e){if(e.response?.status!==404)throw e;}const body={message,content:Buffer.from(content,'utf8').toString('base64'),branch:config.TARGET_BRANCH};if(sha)body.sha=sha;await gh.put(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`,body);}
-async function run(){if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');const source=await targetFile(config.SOURCE_PLAYLIST);const channels=parseM3U(source.content);if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);console.log('Target channel count:',channels.length);console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];
+async function run(){if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');const source=await targetFile(config.SOURCE_PLAYLIST);const channels=parseM3U(source.content);if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);console.log('Target channel count:',channels.length);console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'','SearXNG fallback',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];
   let nextIndex=0, completed=0;
   async function worker(){
     while(true){
