@@ -6,29 +6,49 @@ Automated IPTV channel collector.
 
 1. Reads the channel universe from `my-ip-tv/Brightis.m3u`.
 2. Searches public GitHub code globally for alternative stream URLs for those exact channel names.
-3. Optionally searches Google through Google Programmable Search / Custom Search JSON API.
+3. Searches the general web through the **Brave Search API**.
 4. Removes duplicate URLs.
 5. Checks every candidate URL online before adding it.
-6. Writes the verified duplicate/alternative channel URLs to `my-ip-tv/সার্চ কালেকশন.m3u`.
-7. Searches public GitHub and Google for live-event streams and writes verified results to `my-ip-tv/live-event-channel-colector.m3u`.
+6. Writes verified alternatives to `my-ip-tv/সার্চ কালেকশন.m3u`.
+7. Searches GitHub and the general web for live-event streams and writes verified results to `my-ip-tv/live-event-channel-colector.m3u`.
 
-## Important
+## Google change in 2026
 
-The collector does not copy thousands of arbitrary channels into the main collection. The normal search collection is anchored to the channel names already present in `Brightis.m3u`.
+Google changed its Programmable Search Engine product in 2026. New Search Engines now use the **Sites to search** model rather than newly-created unrestricted full-web engines. Google also states that the Custom Search JSON API is closed to new customers, with existing customers transitioning by January 1, 2027.
 
-A GitHub token is required. The token is stored only as a Render/local environment variable and must never be committed.
+This project therefore does **not** depend on creating a new Google full-web engine. Existing Google CSE credentials are retained only as an optional legacy path.
 
-Google collection requires both `GOOGLE_API_KEY` and `GOOGLE_CX`. Without them, the collector continues with GitHub public-code search.
+The primary general-web provider is Brave Search API. Keep the Brave API key only in Render/local environment variables and never commit it.
 
-## Render
+## Search strategy
 
-This repository includes a Render Cron Blueprint. The cron runs every two hours with a staggered minute. Change the schedule in `render.yaml` if a different frequency is wanted.
+Normal collection is anchored strictly to the current channel universe in `Brightis.m3u`.
 
+For each target channel the collector:
+- searches GitHub public code;
+- searches the general web;
+- extracts `.m3u`, `.m3u8`, and `.ts` URLs from results and fetched result pages;
+- removes duplicates;
+- excludes the original Brightis URL;
+- verifies candidates online before writing them;
+- keeps up to `MAX_RESULTS_PER_CHANNEL` verified alternatives.
 
-## Update cycle
+The live-event collector separately searches sports/live-event queries and verifies URLs before writing them.
+
+## Brightis update behavior
 
 - Every process start performs one complete collection run.
 - At the start of every run, the collector fetches the **latest** `my-ip-tv/main/Brightis.m3u` and parses it as the current baseline/target channel list.
-- If Brightis.m3u gains, removes, or renames channels, the next run automatically follows the new list; it does not use a stale local baseline.
+- If Brightis.m3u gains, removes, or renames channels, the next run automatically follows the new list.
 - Render Cron starts the job every **3 hours**.
-- The sports/live-event collector runs in the same cycle and writes its results to `live-event-channel-colector.m3u`.
+- The sports/live-event collector runs in the same cycle.
+
+## Required environment
+
+- `GITHUB_TOKEN`
+- `BRAVE_API_KEY`
+
+Optional legacy Google:
+- `GOOGLE_API_KEY`
+- `GOOGLE_CX`
+- `GOOGLE_ENABLED=true`
