@@ -103,7 +103,7 @@ async function getSearxInstances(){
       const source=r.data?.instances||r.data||{};
       const entries=Array.isArray(source)?source:Object.entries(source).map(([url,value])=>({url,...(value||{})}));
       return entries.map(x=>({
-        url:String(x.url||'').replace(/\/$/,'')
+        url:String(x.url||'').replace(/\/$/,''),
         uptime:Number(x.http?.uptime??x.uptime??1)
       })).filter(x=>/^https:\/\//i.test(x.url)&&x.uptime>=0.9);
     }catch(e){
