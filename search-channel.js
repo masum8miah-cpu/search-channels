@@ -7,7 +7,7 @@ const gh=axios.create({
   baseURL:'https://api.github.com',
   timeout:30000,
   headers:{
-    ...(config.GITHUB_TOKEN?{Authorization:\`Bearer \${config.GITHUB_TOKEN}\`} : {}),
+    ...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`} : {}),
     Accept:'application/vnd.github+json',
     'X-GitHub-Api-Version':'2022-11-28',
     'User-Agent':config.USER_AGENT
@@ -54,7 +54,7 @@ function extractUrls(text){
 }
 
 async function targetFile(path){
-  const r=await gh.get(\`/repos/\${config.GITHUB_OWNER}/\${config.TARGET_REPO}/contents/\${encodeURIComponent(path)}\`);
+  const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);
   return {sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};
 }
 
@@ -183,8 +183,8 @@ function setName(meta,name,group){
 
 async function collectChannel(channel){
   const queries=[
-    \`"\${channel.name}" m3u8\`,
-    \`"\${channel.name}" stream m3u8\`
+    `"${channel.name}" m3u8`,
+    `"${channel.name}" stream m3u8`
   ];
   let candidates=[];
   for(const q of queries){
@@ -241,7 +241,7 @@ async function writeTarget(path,content,message){
   catch(e){if(e.response?.status!==404)throw e;}
   const body={message,content:Buffer.from(content,'utf8').toString('base64'),branch:config.TARGET_BRANCH};
   if(sha)body.sha=sha;
-  await gh.put(\`/repos/\${config.GITHUB_OWNER}/\${config.TARGET_REPO}/contents/\${encodeURIComponent(path)}\`,body);
+  await gh.put(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`,body);
 }
 
 async function run(){
@@ -261,15 +261,15 @@ async function run(){
 
   let found=[];
   for(let i=0;i<channels.length;i++){
-    console.log(\`[\${i+1}/\${channels.length}] \${channels[i].name}\`);
+    console.log(`[${i+1}/${channels.length}] ${channels[i].name}`);
     found.push(...await collectChannel(channels[i]));
   }
   found=unique(found);
-  await writeTarget(config.SEARCH_OUTPUT,render(found),\`Search channel collection: \${found.length} online URLs\`);
+  await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);
   console.log('Search collection:',found.length);
 
   const live=unique(await collectLive());
-  await writeTarget(config.LIVE_OUTPUT,render(live),\`Live event channel collection: \${live.length} online URLs\`);
+  await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);
   console.log('Live-event collection:',live.length);
 
   return {targets:channels.length,search:found.length,live:live.length};
