@@ -161,13 +161,12 @@ async function searxngSearch(query){
   return [];
 }
 
-async function bingSearch(query){try{const r=await axios.get('https://www.bing.com/search',{params:{q:query,count:10},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const re=/<li[^>]*class=["'][^"']*b_algo[^"']*["'][\s\S]*?<a[^>]+href=["'](https?:\/\/[^"']+)["'][^>]*>/gi;let m;while((m=re.exec(r.data))&&out.length<10)out.push({url:m[1],source:'Bing',name:'Web result',page:true});const expanded=await expandWebPages(out);return unique(expanded);}catch(e){console.warn('Bing search:',e.message);return[];}}\nasync function freeWebSearch(query){
+async function freeWebSearch(query){
   const out=[];
   if(config.FIRECRAWL_ENABLED)out.push(...await firecrawlSearch(query));
   if(out.length<config.MIN_WEB_RESULTS&&config.DDG_ENABLED)out.push(...await duckduckgoSearch(query));
   if(out.length<config.MIN_WEB_RESULTS)out.push(...await searxngSearch(query));
   const direct=unique(out.filter(x=>!x.page));
-  if(direct.length<config.MIN_WEB_RESULTS)out.push(...await bingSearch(query));
   if(direct.length<config.MIN_WEB_RESULTS){const expanded=await expandWebPages(out);out.push(...expanded);}
   return unique(out.filter(x=>!x.page));
 }
