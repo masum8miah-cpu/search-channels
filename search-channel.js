@@ -8,7 +8,26 @@ const gh=axios.create({
   headers:{...(config.GITHUB_TOKEN?{Authorization:`Bearer ${config.GITHUB_TOKEN}`}:{}),Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':config.USER_AGENT}
 });
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function unique(items){const seen=new Set(),out=[];for(const x of items){const key=x.url.toLowerCase().trim();if(!seen.has(key)){seen.add(key);out.push(x);}}return out;}
+function canonicalUrl(value){
+  try{
+    const u=new URL(String(value||'').trim());
+    u.hostname=u.hostname.toLowerCase();
+    if((u.protocol==='http:'&&u.port==='80')||(u.protocol==='https:'&&u.port==='443'))u.port='';
+    if(u.pathname.length>1)u.pathname=u.pathname.replace(/\\/+$/,'');
+    u.hash='';
+    return u.toString();
+  }catch{return String(value||'').trim().toLowerCase();}
+}
+function unique(items){
+  const seen=new Set(),out=[];
+  for(const x of items){
+    const key=canonicalUrl(x?.url);
+    if(!key||seen.has(key))continue;
+    seen.add(key);
+    out.push(x);
+  }
+  return out;
+}
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
 function setName(meta,name,group){let m=meta||'#EXTINF:-1';m=m.replace(/,(.*)$/ ,','+name);if(!m.includes(','))m+=','+name;if(group&&!/group-title=/i.test(m))m=m.replace('#EXTINF:-1','#EXTINF:-1 group-title="'+group+'"');return m;}
 function isHttpUrl(value){try{const u=new URL(String(value||''));return u.protocol==='http:'||u.protocol==='https:';}catch{return false;}}
