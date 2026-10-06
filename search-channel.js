@@ -184,10 +184,9 @@ async function isOnline(url){
   })();
   onlineCheckCache.set(key,check);
   const result=await check;
-  if(!result)onlineCheckCache.delete(key);
+  onlineCheckCache.delete(key);
   return result;
 }
-function setName(meta,name,group){let m=meta||'#EXTINF:-1';m=m.replace(/,(.*)$/ ,','+name);if(!m.includes(','))m+=','+name;if(group&&!/group-title=/i.test(m))m=m.replace('#EXTINF:-1','#EXTINF:-1 group-title="'+group+'"');return m;}
 async function collectChannel(channel,cachedCandidates){
   const query=`"${channel.name}" m3u8`;
   let candidates=Array.isArray(cachedCandidates)&&cachedCandidates.length
