@@ -297,6 +297,9 @@ async function run(){
   }
   await Promise.all(Array.from({length:Math.min(config.CHANNEL_CONCURRENCY,channels.length)},worker));
   found=unique(found);
+  githubCodeSearchCache.clear();
+  searxSearchCache.clear();
+  onlineCheckCache.clear();
   await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);
   await savePersistentSearchCache(nextCache);
   console.log('Search collection:',found.length);
