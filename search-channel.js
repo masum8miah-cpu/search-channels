@@ -92,7 +92,7 @@ async function githubSearch(query,attempt=0){
   }
 }
 async function firecrawlSearch(query){if(!config.FIRECRAWL_ENABLED)return[];try{const headers={'Content-Type':'application/json'};if(config.FIRECRAWL_API_KEY)headers.Authorization=`Bearer ${config.FIRECRAWL_API_KEY}`;const r=await axios.post('https://api.firecrawl.dev/v2/search',{query,limit:config.FIRECRAWL_RESULTS,sources:['web'],scrapeOptions:{formats:['markdown']}},{timeout:config.FIRECRAWL_TIMEOUT_MS,headers});const out=[];for(const item of r.data.data?.web||[]){const text=[item.title,item.description,item.url,item.markdown].join(' ');for(const url of extractUrls(text))out.push({url,source:item.url,name:item.title||'Web result'});}return unique(out);}catch(e){console.warn('Firecrawl search:',e.response?.data?.error||e.message);return[];}}
-async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));for(const stream of extractUrls(url))out.push({url:stream,source:'DuckDuckGo',name:'Web result'});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
+async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));if(/^https?:\\/\\//i.test(url))out.push({url,source:'DuckDuckGo',name:'Web result',page:true});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
 let searxInstancesPromise=null;
 const searxSearchCache=new Map();
 const SEARX_INSTANCE_LIST_URL='https://searx.space/data/instances.json';
@@ -116,6 +116,7 @@ async function getSearxInstances(){
   return searxInstancesPromise;
 }
 
+async function expandWebPages(items){const out=[];const pages=unique(items).filter(x=>x.page&&/^https?:\\/\\//i.test(x.url)).slice(0,6);for(const item of pages){try{const r=await axios.get(item.url,{timeout:config.WEB_PAGE_TIMEOUT_MS,maxRedirects:5,responseType:'text',headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml,text/plain'}});for(const url of extractUrls(r.data))out.push({url,source:item.source||'Web page',name:item.name||'Web result'});}catch{}}return unique(out);}
 function parseSearxHtml(html){
   const out=[];
   const links=String(html||'').match(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)||[];
@@ -125,7 +126,7 @@ function parseSearxHtml(html){
     let href=m[1];
     try{href=decodeURIComponent(href);}catch{}
     const title=m[2].replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
-    for(const url of extractUrls(href+' '+title))out.push({url,source:'SearXNG',name:title||'SearXNG result'});
+    if(/^https?:\\/\\//i.test(href))out.push({url:href,source:'SearXNG',name:title||'SearXNG result',page:true});
   }
   return unique(out);
 }
@@ -139,10 +140,10 @@ async function searxngSearch(query){
       const r=await axios.get(instance.url+'/search',{params:{q:query,format:'json',pageno:1},timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
       const out=[];
       for(const item of r.data?.results||[]){
-        for(const url of extractUrls([item.title,item.content,item.url].join(' ')))out.push({url,source:'SearXNG',name:item.title||'SearXNG result'});
+        if(/^https?:\\/\\//i.test(item.url||''))out.push({url:item.url,source:'SearXNG',name:item.title||'SearXNG result',page:true});
       }
       const result=unique(out);
-      if(result.length){searxSearchCache.set(key,result);return result;}
+      if(result.length){const expanded=await expandWebPages(result);const final=unique([...result.filter(x=>!x.page),...expanded]);if(final.length){searxSearchCache.set(key,final);return final;}}
     }catch(e){
       const status=e.response?.status;
       if(status!==403&&status!==404&&status!==429&&status<500)console.warn('SearXNG:',e.message);
@@ -150,7 +151,7 @@ async function searxngSearch(query){
         if(status===403||status===404){
           const r=await axios.get(instance.url+'/search',{params:{q:query},timeout:7000,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html'}});
           const result=parseSearxHtml(r.data);
-          if(result.length){searxSearchCache.set(key,result);return result;}
+          if(result.length){const expanded=await expandWebPages(result);const final=unique([...result.filter(x=>!x.page),...expanded]);if(final.length){searxSearchCache.set(key,final);return final;}}
         }
       }catch{}
     }
@@ -164,7 +165,9 @@ async function freeWebSearch(query){
   if(config.FIRECRAWL_ENABLED)out.push(...await firecrawlSearch(query));
   if(out.length<config.MIN_WEB_RESULTS&&config.DDG_ENABLED)out.push(...await duckduckgoSearch(query));
   if(out.length<config.MIN_WEB_RESULTS)out.push(...await searxngSearch(query));
-  return unique(out);
+  const direct=unique(out.filter(x=>!x.page));
+  if(direct.length<config.MIN_WEB_RESULTS){const expanded=await expandWebPages(out);out.push(...expanded);}
+  return unique(out.filter(x=>!x.page));
 }
 async function googleSearchLegacy(query){if(!config.GOOGLE_ENABLED||!config.GOOGLE_API_KEY||!config.GOOGLE_CX)return[];try{const r=await axios.get('https://www.googleapis.com/customsearch/v1',{params:{key:config.GOOGLE_API_KEY,cx:config.GOOGLE_CX,q:query,num:10},timeout:20000});const out=[];for(const item of r.data.items||[])for(const url of extractUrls([item.title,item.snippet,item.link].join(' ')))out.push({url,source:item.link,name:item.title});return out;}catch(e){console.warn('Google legacy search:',e.response?.data?.error?.message||e.message);return[];}}
 async function webSearch(query){const [web,google]=await Promise.all([freeWebSearch(query),googleSearchLegacy(query)]);return unique([...web,...google]);}
@@ -195,11 +198,8 @@ async function collectChannel(channel,cachedCandidates){
     : [];
   let usedCache=candidates.length>0;
   if(!candidates.length){
-    const githubQueries=[query, '"'+channel.name+'" m3u', '"'+channel.name+'" stream m3u8'];
-    const [githubCandidates,webCandidates]=await Promise.all([
-      Promise.all(githubQueries.map(q=>queueGithubCodeSearch(q))).then(b=>unique(b.flat())),
-      webSearch(query+' live')
-    ]);
+    const githubCandidates=await queueGithubCodeSearch(query);
+    const webCandidates=await webSearch(query+' live');
     candidates=unique([...githubCandidates,...webCandidates]).filter(x=>x.url!==channel.url).slice(0,40);
     usedCache=false;
   }
@@ -218,11 +218,8 @@ async function collectChannel(channel,cachedCandidates){
   }
   let good=await validate(candidates);
   if(usedCache&&!good.length){
-    const githubQueries=[query, '"'+channel.name+'" m3u', '"'+channel.name+'" stream m3u8'];
-    const [githubCandidates,webCandidates]=await Promise.all([
-      Promise.all(githubQueries.map(q=>queueGithubCodeSearch(q))).then(b=>unique(b.flat())),
-      webSearch(query+' live')
-    ]);
+    const githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
+    const webCandidates=await webSearch(query+' live');
     candidates=unique([...githubCandidates,...webCandidates]).filter(x=>x.url!==channel.url).slice(0,40);
     good=await validate(candidates);
   }
