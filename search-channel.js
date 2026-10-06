@@ -284,6 +284,10 @@ async function run(){
         found.push(...result.results);
         nextCache.channels[cacheKey]={name:channel.name,urls:result.candidates.map(x=>x.url).filter(Boolean)};
         completed++;
+        if(completed%10===0) await savePersistentSearchCache(nextCache);
+        githubCodeSearchCache.clear();
+        searxSearchCache.clear();
+        onlineCheckCache.clear();
         console.log(`[${i+1}/${channels.length}] DONE ${channel.name} (+${result.results.length}, ${cached.length?'cache':'search'}, total=${found.length}, completed=${completed})`);
       }catch(e){
         completed++;
