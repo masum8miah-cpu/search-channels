@@ -92,7 +92,7 @@ async function githubSearch(query,attempt=0){
   }
 }
 async function firecrawlSearch(query){if(!config.FIRECRAWL_ENABLED)return[];try{const headers={'Content-Type':'application/json'};if(config.FIRECRAWL_API_KEY)headers.Authorization=`Bearer ${config.FIRECRAWL_API_KEY}`;const r=await axios.post('https://api.firecrawl.dev/v2/search',{query,limit:config.FIRECRAWL_RESULTS,sources:['web'],scrapeOptions:{formats:['markdown']}},{timeout:config.FIRECRAWL_TIMEOUT_MS,headers});const out=[];for(const item of r.data.data?.web||[]){const text=[item.title,item.description,item.url,item.markdown].join(' ');for(const url of extractUrls(text))out.push({url,source:item.url,name:item.title||'Web result'});}return unique(out);}catch(e){console.warn('Firecrawl search:',e.response?.data?.error||e.message);return[];}}
-async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));if(/^https?:\\/\\//i.test(url))out.push({url,source:'DuckDuckGo',name:'Web result',page:true});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
+async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));if(/^https?:\/\//i.test(url))out.push({url,source:'DuckDuckGo',name:'Web result',page:true});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
 let searxInstancesPromise=null;
 const searxSearchCache=new Map();
 const SEARX_INSTANCE_LIST_URL='https://searx.space/data/instances.json';
@@ -116,7 +116,7 @@ async function getSearxInstances(){
   return searxInstancesPromise;
 }
 
-async function expandWebPages(items){const out=[];const pages=unique(items).filter(x=>x.page&&/^https?:\\/\\//i.test(x.url)).slice(0,6);for(const item of pages){try{const r=await axios.get(item.url,{timeout:config.WEB_PAGE_TIMEOUT_MS,maxRedirects:5,responseType:'text',headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml,text/plain'}});for(const url of extractUrls(r.data))out.push({url,source:item.source||'Web page',name:item.name||'Web result'});}catch{}}return unique(out);}
+async function expandWebPages(items){const out=[];const pages=unique(items).filter(x=>x.page&&/^https?:\/\//i.test(x.url)).slice(0,6);for(const item of pages){try{const r=await axios.get(item.url,{timeout:config.WEB_PAGE_TIMEOUT_MS,maxRedirects:5,responseType:'text',headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml,text/plain'}});for(const url of extractUrls(r.data))out.push({url,source:item.source||'Web page',name:item.name||'Web result'});}catch{}}return unique(out);}
 function parseSearxHtml(html){
   const out=[];
   const links=String(html||'').match(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)||[];
@@ -126,7 +126,7 @@ function parseSearxHtml(html){
     let href=m[1];
     try{href=decodeURIComponent(href);}catch{}
     const title=m[2].replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
-    if(/^https?:\\/\\//i.test(href))out.push({url:href,source:'SearXNG',name:title||'SearXNG result',page:true});
+    if(/^https?:\/\//i.test(href))out.push({url:href,source:'SearXNG',name:title||'SearXNG result',page:true});
   }
   return unique(out);
 }
@@ -140,7 +140,7 @@ async function searxngSearch(query){
       const r=await axios.get(instance.url+'/search',{params:{q:query,format:'json',pageno:1},timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
       const out=[];
       for(const item of r.data?.results||[]){
-        if(/^https?:\\/\\//i.test(item.url||''))out.push({url:item.url,source:'SearXNG',name:item.title||'SearXNG result',page:true});
+        if(/^https?:\/\//i.test(item.url||''))out.push({url:item.url,source:'SearXNG',name:item.title||'SearXNG result',page:true});
       }
       const result=unique(out);
       if(result.length){const expanded=await expandWebPages(result);const final=unique([...result.filter(x=>!x.page),...expanded]);if(final.length){searxSearchCache.set(key,final);return final;}}
@@ -160,7 +160,7 @@ async function searxngSearch(query){
   return [];
 }
 
-async function bingSearch(query){try{const r=await axios.get('https://www.bing.com/search',{params:{q:query,count:10},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const re=/<li[^>]*class=["'][^"']*b_algo[^"']*["'][\\s\\S]*?<a[^>]+href=["'](https?:\\/\\/[^"']+)["'][^>]*>/gi;let m;while((m=re.exec(r.data))&&out.length<10)out.push({url:m[1],source:'Bing',name:'Web result',page:true});const expanded=await expandWebPages(out);return unique(expanded);}catch(e){console.warn('Bing search:',e.message);return[];}}\nasync function freeWebSearch(query){
+async function bingSearch(query){try{const r=await axios.get('https://www.bing.com/search',{params:{q:query,count:10},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const re=/<li[^>]*class=["'][^"']*b_algo[^"']*["'][\\s\\S]*?<a[^>]+href=["'](https?:\/\/[^"']+)["'][^>]*>/gi;let m;while((m=re.exec(r.data))&&out.length<10)out.push({url:m[1],source:'Bing',name:'Web result',page:true});const expanded=await expandWebPages(out);return unique(expanded);}catch(e){console.warn('Bing search:',e.message);return[];}}\nasync function freeWebSearch(query){
   const out=[];
   if(config.FIRECRAWL_ENABLED)out.push(...await firecrawlSearch(query));
   if(out.length<config.MIN_WEB_RESULTS&&config.DDG_ENABLED)out.push(...await duckduckgoSearch(query));
