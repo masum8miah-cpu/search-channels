@@ -10,6 +10,7 @@ const gh=axios.create({
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function unique(items){const seen=new Set(),out=[];for(const x of items){const key=x.url.toLowerCase().trim();if(!seen.has(key)){seen.add(key);out.push(x);}}return out;}
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
+function setName(meta,name,group){let m=meta||'#EXTINF:-1';m=m.replace(/,(.*)$/ ,','+name);if(!m.includes(','))m+=','+name;if(group&&!/group-title=/i.test(m))m=m.replace('#EXTINF:-1','#EXTINF:-1 group-title="'+group+'"');return m;}
 function extractUrls(text){return (String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')).filter(u=>/\.(?:m3u8?|ts)(?:[?#]|$)/i.test(u));}
 async function targetFile(path){const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);return{sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};}
 let githubCodeSearchPausedUntil=0;
@@ -100,7 +101,7 @@ async function getSearxInstances(){
   if(searxInstancesPromise)return searxInstancesPromise;
   searxInstancesPromise=(async()=>{
     try{
-      const r=await axios.get(SEARX_INSTANCE_LIST_URL,{timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
+      const r=await axios.get(SEARX_INSTANCE_LIST_URL,{timeout:7000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
       const source=r.data?.instances||r.data||{};
       const entries=Array.isArray(source)?source:Object.entries(source).map(([url,value])=>({url,...(value||{})}));
       return entries.map(x=>({
@@ -132,7 +133,7 @@ function parseSearxHtml(html){
 async function searxngSearch(query){
   const key=String(query).trim().toLowerCase();
   if(searxSearchCache.has(key))return searxSearchCache.get(key);
-  const instances=(await getSearxInstances()).slice(0,8);
+  const instances=(await getSearxInstances()).slice(0,4);
   for(const instance of instances){
     try{
       const r=await axios.get(instance.url+'/search',{params:{q:query,format:'json',pageno:1},timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
@@ -147,7 +148,7 @@ async function searxngSearch(query){
       if(status!==403&&status!==404&&status!==429&&status<500)console.warn('SearXNG:',e.message);
       try{
         if(status===403||status===404){
-          const r=await axios.get(instance.url+'/search',{params:{q:query},timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html'}});
+          const r=await axios.get(instance.url+'/search',{params:{q:query},timeout:7000,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html'}});
           const result=parseSearxHtml(r.data);
           if(result.length){searxSearchCache.set(key,result);return result;}
         }
@@ -194,8 +195,9 @@ async function collectChannel(channel,cachedCandidates){
     : [];
   let usedCache=candidates.length>0;
   if(!candidates.length){
+    const githubQueries=[query, '"'+channel.name+'" m3u', '"'+channel.name+'" stream m3u8'];
     const [githubCandidates,webCandidates]=await Promise.all([
-      queueGithubCodeSearch(query),
+      Promise.all(githubQueries.map(q=>queueGithubCodeSearch(q))).then(b=>unique(b.flat())),
       webSearch(query+' live')
     ]);
     candidates=unique([...githubCandidates,...webCandidates]).filter(x=>x.url!==channel.url).slice(0,40);
@@ -216,8 +218,9 @@ async function collectChannel(channel,cachedCandidates){
   }
   let good=await validate(candidates);
   if(usedCache&&!good.length){
+    const githubQueries=[query, '"'+channel.name+'" m3u', '"'+channel.name+'" stream m3u8'];
     const [githubCandidates,webCandidates]=await Promise.all([
-      queueGithubCodeSearch(query),
+      Promise.all(githubQueries.map(q=>queueGithubCodeSearch(q))).then(b=>unique(b.flat())),
       webSearch(query+' live')
     ]);
     candidates=unique([...githubCandidates,...webCandidates]).filter(x=>x.url!==channel.url).slice(0,40);
