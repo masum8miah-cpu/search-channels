@@ -13,7 +13,7 @@ function canonicalUrl(value){
     const u=new URL(String(value||'').trim());
     u.hostname=u.hostname.toLowerCase();
     if((u.protocol==='http:'&&u.port==='80')||(u.protocol==='https:'&&u.port==='443'))u.port='';
-    if(u.pathname.length>1)u.pathname=u.pathname.replace(/\\/+$/,'');
+    if(u.pathname.length>1)u.pathname=u.pathname.replace(/\/+$/,'');
     u.hash='';
     return u.toString();
   }catch{return String(value||'').trim().toLowerCase();}
