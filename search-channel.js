@@ -213,38 +213,63 @@ async function isOnline(url){
 }
 async function collectChannel(channel,cachedCandidates){
   const query=`"${channel.name}" m3u8`;
-  let candidates=Array.isArray(cachedCandidates)&&cachedCandidates.length
-    ? unique(cachedCandidates.map(url=>({url,source:'Persistent cache',name:channel.name})))
-    : [];
+  const baselineUrl=canonicalUrl(channel.url);
+  const dedupeCandidates=list=>unique(Array.isArray(list)?list:[])
+    .filter(x=>canonicalUrl(x?.url)!==baselineUrl)
+    .filter(x=>isHttpUrl(x?.url))
+    .slice(0,40);
+
+  let candidates=dedupeCandidates(
+    Array.isArray(cachedCandidates)&&cachedCandidates.length
+      ? cachedCandidates.map(url=>({url,source:'Persistent cache',name:channel.name}))
+      : []
+  );
   let usedCache=candidates.length>0;
+
   if(!candidates.length){
     let githubCandidates=await queueGithubCodeSearch(query);
     let webCandidates=await webSearch(query+' live');
-    if(!githubCandidates.length&&!webCandidates.length) githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
-    candidates=unique([...githubCandidates,...webCandidates]).filter(x=>x.url!==channel.url).slice(0,40);
+    if(!githubCandidates.length&&!webCandidates.length){
+      githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
+    }
+    candidates=dedupeCandidates([...githubCandidates,...webCandidates]);
     usedCache=false;
   }
+
   async function validate(list){
     const good=[];
-    for(let i=0;i<list.length;i+=config.URL_CHECK_CONCURRENCY){
-      const batch=list.slice(i,i+config.URL_CHECK_CONCURRENCY);
+    const checked=dedupeCandidates(list);
+    for(let i=0;i<checked.length;i+=config.URL_CHECK_CONCURRENCY){
+      const batch=checked.slice(i,i+config.URL_CHECK_CONCURRENCY);
       const results=await Promise.all(batch.map(async c=>({c,ok:await isOnline(c.url)})));
-      for(const {c,ok} of results)if(ok){
-        good.push({name:channel.name,url:c.url,meta:setName(channel.meta,channel.name,'Search Collection'),source:c.source});
+      for(const {c,ok} of results){
+        if(!ok)continue;
+        good.push({
+          name:channel.name,
+          url:c.url,
+          meta:setName(channel.meta,channel.name,'Search Collection'),
+          source:c.source
+        });
         if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
       }
       if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
     }
-    return good;
+    return unique(good);
   }
+
   let good=await validate(candidates);
+
   if(usedCache&&!good.length){
     const githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
     const webCandidates=await webSearch(query+' live');
-    candidates=unique([...githubCandidates,...webCandidates]).filter(x=>x.url!==channel.url).slice(0,40);
+    candidates=dedupeCandidates([...githubCandidates,...webCandidates]);
     good=await validate(candidates);
   }
-  return {results:good,candidates:candidates.slice(0,10)};
+
+  return {
+    results:unique(good),
+    candidates:unique(candidates).slice(0,10).map(x=>x.url)
+  };
 }
 async function collectLive(){
   const batches=await Promise.all(config.LIVE_QUERIES.map(async q=>[...(await queueGithubCodeSearch(q)),...(await webSearch(q))]));
