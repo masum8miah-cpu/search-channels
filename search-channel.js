@@ -11,6 +11,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function unique(items){const seen=new Set(),out=[];for(const x of items){const key=x.url.toLowerCase().trim();if(!seen.has(key)){seen.add(key);out.push(x);}}return out;}
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
 function setName(meta,name,group){let m=meta||'#EXTINF:-1';m=m.replace(/,(.*)$/ ,','+name);if(!m.includes(','))m+=','+name;if(group&&!/group-title=/i.test(m))m=m.replace('#EXTINF:-1','#EXTINF:-1 group-title="'+group+'"');return m;}
+function isHttpUrl(value){try{const u=new URL(String(value||''));return u.protocol==='http:'||u.protocol==='https:';}catch{return false;}}
 function extractUrls(text){return (String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')).filter(u=>/\.(?:m3u8?|ts)(?:[?#]|$)/i.test(u));}
 async function targetFile(path){const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);return{sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};}
 let githubCodeSearchPausedUntil=0;
@@ -92,7 +93,7 @@ async function githubSearch(query,attempt=0){
   }
 }
 async function firecrawlSearch(query){if(!config.FIRECRAWL_ENABLED)return[];try{const headers={'Content-Type':'application/json'};if(config.FIRECRAWL_API_KEY)headers.Authorization=`Bearer ${config.FIRECRAWL_API_KEY}`;const r=await axios.post('https://api.firecrawl.dev/v2/search',{query,limit:config.FIRECRAWL_RESULTS,sources:['web'],scrapeOptions:{formats:['markdown']}},{timeout:config.FIRECRAWL_TIMEOUT_MS,headers});const out=[];for(const item of r.data.data?.web||[]){const text=[item.title,item.description,item.url,item.markdown].join(' ');for(const url of extractUrls(text))out.push({url,source:item.url,name:item.title||'Web result'});}return unique(out);}catch(e){console.warn('Firecrawl search:',e.response?.data?.error||e.message);return[];}}
-async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));if(/^https?:\/\//i.test(url))out.push({url,source:'DuckDuckGo',name:'Web result',page:true});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
+async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));if(isHttpUrl(url))out.push({url,source:'DuckDuckGo',name:'Web result',page:true});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
 let searxInstancesPromise=null;
 const searxSearchCache=new Map();
 const SEARX_INSTANCE_LIST_URL='https://searx.space/data/instances.json';
@@ -116,7 +117,7 @@ async function getSearxInstances(){
   return searxInstancesPromise;
 }
 
-async function expandWebPages(items){const out=[];const pages=unique(items).filter(x=>x.page&&/^https?:\/\//i.test(x.url)).slice(0,6);for(const item of pages){try{const r=await axios.get(item.url,{timeout:config.WEB_PAGE_TIMEOUT_MS,maxRedirects:5,responseType:'text',headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml,text/plain'}});for(const url of extractUrls(r.data))out.push({url,source:item.source||'Web page',name:item.name||'Web result'});}catch{}}return unique(out);}
+async function expandWebPages(items){const out=[];const pages=unique(items).filter(x=>x.page&&isHttpUrl(x.url)).slice(0,6);for(const item of pages){try{const r=await axios.get(item.url,{timeout:config.WEB_PAGE_TIMEOUT_MS,maxRedirects:5,responseType:'text',headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml,text/plain'}});for(const url of extractUrls(r.data))out.push({url,source:item.source||'Web page',name:item.name||'Web result'});}catch{}}return unique(out);}
 function parseSearxHtml(html){
   const out=[];
   const links=String(html||'').match(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)||[];
@@ -126,7 +127,7 @@ function parseSearxHtml(html){
     let href=m[1];
     try{href=decodeURIComponent(href);}catch{}
     const title=m[2].replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim();
-    if(/^https?:\/\//i.test(href))out.push({url:href,source:'SearXNG',name:title||'SearXNG result',page:true});
+    if(isHttpUrl(href))out.push({url:href,source:'SearXNG',name:title||'SearXNG result',page:true});
   }
   return unique(out);
 }
@@ -140,7 +141,7 @@ async function searxngSearch(query){
       const r=await axios.get(instance.url+'/search',{params:{q:query,format:'json',pageno:1},timeout:10000,headers:{'User-Agent':config.USER_AGENT,Accept:'application/json'}});
       const out=[];
       for(const item of r.data?.results||[]){
-        if(/^https?:\/\//i.test(item.url||''))out.push({url:item.url,source:'SearXNG',name:item.title||'SearXNG result',page:true});
+        if(isHttpUrl(item.url))out.push({url:item.url,source:'SearXNG',name:item.title||'SearXNG result',page:true});
       }
       const result=unique(out);
       if(result.length){const expanded=await expandWebPages(result);const final=unique([...result.filter(x=>!x.page),...expanded]);if(final.length){searxSearchCache.set(key,final);return final;}}
