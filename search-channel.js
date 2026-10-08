@@ -387,10 +387,10 @@ async function run(){
       const before=found.length;
       try{
         const cacheKey=String(channel.name||'').trim().toLowerCase();
-        const cached=previousCache.channels?.[cacheKey]?.urls||[];
-        const result=await collectChannel(channel,cached);
+        const cachedEntry=previousCache.channels?.[cacheKey]||{};
+        const result=await collectChannel(channel,cachedEntry);
         found.push(...result.results);
-        nextCache.channels[cacheKey]={name:channel.name,urls:result.candidates.map(x=>x.url).filter(Boolean)};
+        nextCache.channels[cacheKey]={name:channel.name,candidates:result.cacheCandidates,urls:result.cacheCandidates.map(x=>x.url).filter(Boolean)};
         completed++;
         if(completed%10===0) await savePersistentSearchCache(nextCache);
         githubCodeSearchCache.clear();
