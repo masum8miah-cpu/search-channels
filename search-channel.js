@@ -29,7 +29,20 @@ function unique(items){
   return out;
 }
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
-function setName(meta,name,group){let m=meta||'#EXTINF:-1';m=m.replace(/,(.*)$/ ,','+name);if(!m.includes(','))m+=','+name;if(group&&!/group-title=/i.test(m))m=m.replace('#EXTINF:-1','#EXTINF:-1 group-title="'+group+'"');return m;}
+function normalizeChannelName(value){
+  return String(value||'').normalize('NFKD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase()
+    .replace(/\\b(1080p|720p|480p|4k|uhd|fhd|hd|sd|live|tv|television|channel)\\b/g,' ')
+    .replace(/[^a-z0-9]+/g,' ').trim().replace(/\\s+/g,' ');
+}
+function sameChannelName(target, candidate){
+  const a=normalizeChannelName(target), b=normalizeChannelName(candidate);
+  if(!a||!b)return false;
+  if(a===b)return true;
+  const aa=a.split(' ').filter(Boolean), bb=b.split(' ').filter(Boolean);
+  // Require every meaningful target token to appear in the source entry.
+  return aa.length>0 && aa.every(token=>bb.includes(token));
+}
+function setName(meta){return String(meta||'').trim();}
 function isHttpUrl(value){try{const u=new URL(String(value||''));return u.protocol==='http:'||u.protocol==='https:';}catch{return false;}}
 function extractUrls(text){return (String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')).filter(u=>/\.(?:m3u8?|ts)(?:[?#]|$)/i.test(u));}
 async function targetFile(path){const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);return{sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};}
@@ -91,7 +104,12 @@ async function githubSearch(query,attempt=0){
       }));
       for(const result of results)if(result.status==='fulfilled'){
         const {item,content}=result.value;
-        for(const url of extractUrls(content))chunks.push({url,source:item.html_url,name:item.name});
+        // Only accept entries that carry their own source playlist metadata.
+        // A bare stream URL from source code is not enough to prove channel identity.
+        for(const entry of parseM3U(content)){
+          if(!entry.meta || !entry.meta.startsWith('#EXTINF')) continue;
+          chunks.push({url:entry.url,source:item.html_url,name:entry.name,meta:entry.meta,sourceName:entry.name});
+        }
       }
     }
     const result=unique(chunks);
@@ -219,37 +237,27 @@ async function collectChannel(channel,cachedCandidates){
     .filter(x=>isHttpUrl(x?.url))
     .slice(0,40);
 
-  let candidates=dedupeCandidates(
-    Array.isArray(cachedCandidates)&&cachedCandidates.length
-      ? cachedCandidates.map(url=>({url,source:'Persistent cache',name:channel.name}))
-      : []
-  );
-  let usedCache=candidates.length>0;
-
-  if(!candidates.length){
-    let githubCandidates=await queueGithubCodeSearch(query);
-    let webCandidates=await webSearch(query+' live');
-    if(!githubCandidates.length&&!webCandidates.length){
-      githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
-    }
-    candidates=dedupeCandidates([...githubCandidates,...webCandidates]);
-    usedCache=false;
-  }
+  // Old cache entries contain URLs only, not provenance/EXTINF metadata, so they
+  // must never be used as output candidates.
+  let candidates=[];
+  let githubCandidates=await queueGithubCodeSearch(query);
+  if(!githubCandidates.length) githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
+  candidates=dedupeCandidates(githubCandidates)
+    .filter(c=>c.meta && sameChannelName(channel.name,c.sourceName||c.name));
 
   async function validate(list){
     const good=[];
-    const checked=dedupeCandidates(list);
+    const checked=dedupeCandidates(list)
+      .filter(c=>c.meta && c.meta.startsWith('#EXTINF'))
+      .filter(c=>sameChannelName(channel.name,c.sourceName||c.name));
     for(let i=0;i<checked.length;i+=config.URL_CHECK_CONCURRENCY){
       const batch=checked.slice(i,i+config.URL_CHECK_CONCURRENCY);
       const results=await Promise.all(batch.map(async c=>({c,ok:await isOnline(c.url)})));
       for(const {c,ok} of results){
         if(!ok)continue;
-        good.push({
-          name:channel.name,
-          url:c.url,
-          meta:setName(channel.meta,channel.name,'Search Collection'),
-          source:c.source
-        });
+        // Preserve the source playlist's EXTINF line verbatim: never copy target
+        // name, logo, tvg-id, or group metadata into the result.
+        good.push({name:c.sourceName||c.name,url:c.url,meta:c.meta,source:c.source});
         if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
       }
       if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
@@ -257,17 +265,10 @@ async function collectChannel(channel,cachedCandidates){
     return unique(good);
   }
 
-  let good=await validate(candidates);
-
-  if(usedCache&&!good.length){
-    const githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
-    const webCandidates=await webSearch(query+' live');
-    candidates=dedupeCandidates([...githubCandidates,...webCandidates]);
-    good=await validate(candidates);
-  }
-
+  const good=await validate(candidates);
   return {
     results:unique(good),
+    // Cache is intentionally metadata-free and therefore not reused for output.
     candidates:unique(candidates).slice(0,10).map(x=>x.url)
   };
 }
