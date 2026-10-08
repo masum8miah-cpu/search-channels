@@ -31,7 +31,7 @@ function unique(items){
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
 function normalizeChannelName(value){
   return String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
-    .replace(/\b(1080p|720p|480p|4k|uhd|fhd|hd|sd|live|tv|television|channel)\b/g,' ')
+    .replace(/\bekushey\b/g,'ekushe')\n    .replace(/\b(1080p|720p|480p|4k|uhd|fhd|hd|sd|live|tv|television|channel)\b/g,' ')
     .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
 }
 function sameChannelName(target, candidate){
