@@ -214,14 +214,49 @@ async function isOnline(url){
   if(!key)return false;
   if(onlineCheckCache.has(key))return onlineCheckCache.get(key);
   const check=(async()=>{
+    let response;
     try{
-      const r=await axios.get(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,responseType:'stream',validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT,Accept:'*/*'}});
-      r.data.destroy(); return true;
+      response=await axios.get(url,{
+        timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,
+        responseType:'stream',validateStatus:s=>s>=200&&s<400,
+        headers:{'User-Agent':config.USER_AGENT,Accept:'application/vnd.apple.mpegurl,application/x-mpegURL,video/mp2t,video/*,application/octet-stream,*/*'}
+      });
+      const status=response.status;
+      const headers=response.headers||{};
+      const type=String(headers['content-type']||'').toLowerCase();
+      const finalUrl=String(response.request?.res?.responseUrl||url).toLowerCase();
+      const isPlaylist=/\\.m3u8?(?:[?#]|$)/i.test(finalUrl)||/mpegurl/.test(type);
+      const isTs=/\\.ts(?:[?#]|$)/i.test(finalUrl)||/mp2t/.test(type);
+      if(type.includes('text/html')||type.includes('application/xhtml')){
+        response.data.destroy();
+        return false;
+      }
+      if(!isPlaylist&&!isTs&&!/video\\//.test(type)&&!type.includes('octet-stream')){
+        response.data.destroy();
+        return false;
+      }
+      if(isPlaylist){
+        const body=await new Promise((resolve,reject)=>{
+          let data='',done=false;
+          const finish=(err,value)=>{if(done)return;done=true;response.data.destroy();err?reject(err):resolve(value);};
+          response.data.setEncoding('utf8');
+          response.data.on('data',chunk=>{
+            data+=chunk;
+            if(data.length>=4096)finish(null,data.slice(0,4096));
+          });
+          response.data.on('end',()=>finish(null,data));
+          response.data.on('error',err=>finish(err));
+          setTimeout(()=>finish(null,data),Math.min(config.URL_CHECK_TIMEOUT_MS,2500)).unref?.();
+        }).catch(()=> '');
+        return status>=200&&status<400&&/^\\s*#EXTM3U\\b/i.test(body);
+      }
+      // For transport streams, a successful non-HTML response plus a stream-like
+      // content type is required; reject pages that merely return HTTP 200.
+      response.data.destroy();
+      return status>=200&&status<400;
     }catch{
-      try{
-        const r=await axios.head(url,{timeout:config.URL_CHECK_TIMEOUT_MS,maxRedirects:5,validateStatus:s=>s>=200&&s<400,headers:{'User-Agent':config.USER_AGENT}});
-        return r.status>=200&&r.status<400;
-      }catch{return false;}
+      if(response?.data?.destroy)response.data.destroy();
+      return false;
     }
   })();
   onlineCheckCache.set(key,check);
