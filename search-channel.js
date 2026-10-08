@@ -132,7 +132,7 @@ async function githubSearch(query,attempt=0){
     return[];
   }
 }
-async function firecrawlSearch(query){if(!config.FIRECRAWL_ENABLED)return[];try{const headers={'Content-Type':'application/json'};if(config.FIRECRAWL_API_KEY)headers.Authorization=`Bearer ${config.FIRECRAWL_API_KEY}`;const r=await axios.post('https://api.firecrawl.dev/v2/search',{query,limit:config.FIRECRAWL_RESULTS,sources:['web'],scrapeOptions:{formats:['markdown']}},{timeout:config.FIRECRAWL_TIMEOUT_MS,headers});const out=[];for(const item of r.data.data?.web||[]){const text=[item.title,item.description,item.url,item.markdown].join(' ');for(const url of extractUrls(text))out.push({url,source:item.url,name:item.title||'Web result'});}return unique(out);}catch(e){console.warn('Firecrawl search:',e.response?.data?.error||e.message);return[];}}
+async function firecrawlSearch(query){if(!config.FIRECRAWL_ENABLED)return[];try{const headers={'Content-Type':'application/json'};if(config.FIRECRAWL_API_KEY)headers.Authorization=`Bearer ${config.FIRECRAWL_API_KEY}`;const r=await axios.post('https://api.firecrawl.dev/v2/search',{query,limit:config.FIRECRAWL_RESULTS,sources:['web'],scrapeOptions:{formats:['markdown']}},{timeout:config.FIRECRAWL_TIMEOUT_MS,headers});const out=[];for(const item of r.data.data?.web||[]){const text=[item.title,item.description,item.url,item.markdown].join(' ');for(const url of extractUrls(text))out.push({url,source:'Firecrawl: '+item.url,name:item.title||'Web result'});}return unique(out);}catch(e){console.warn('Firecrawl search:',e.response?.data?.error||e.message);return[];}}
 async function duckduckgoSearch(query){if(!config.DDG_ENABLED)return[];try{const r=await axios.get('https://html.duckduckgo.com/html/',{params:{q:query},timeout:config.DDG_TIMEOUT_MS,headers:{'User-Agent':config.USER_AGENT,Accept:'text/html,application/xhtml+xml'},responseType:'text'});const out=[];const links=r.data.match(/uddg=([^&"']+)/gi)||[];for(const raw of links){try{const url=decodeURIComponent(raw.replace(/^uddg=/i,''));if(isHttpUrl(url))out.push({url,source:'DuckDuckGo',name:'Web result',page:true});}catch{}}return unique(out);}catch(e){console.warn('DuckDuckGo search:',e.message);return[];}}
 let searxInstancesPromise=null;
 const searxSearchCache=new Map();
@@ -210,7 +210,7 @@ async function freeWebSearch(query){
   if(direct.length<config.MIN_WEB_RESULTS){const expanded=await expandWebPages(out);out.push(...expanded);}
   return unique(out.filter(x=>!x.page));
 }
-async function googleSearchLegacy(query){if(!config.GOOGLE_ENABLED||!config.GOOGLE_API_KEY||!config.GOOGLE_CX)return[];try{const r=await axios.get('https://www.googleapis.com/customsearch/v1',{params:{key:config.GOOGLE_API_KEY,cx:config.GOOGLE_CX,q:query,num:10},timeout:20000});const out=[];for(const item of r.data.items||[])for(const url of extractUrls([item.title,item.snippet,item.link].join(' ')))out.push({url,source:item.link,name:item.title});return out;}catch(e){console.warn('Google legacy search:',e.response?.data?.error?.message||e.message);return[];}}
+async function googleSearchLegacy(query){if(!config.GOOGLE_ENABLED||!config.GOOGLE_API_KEY||!config.GOOGLE_CX)return[];try{const r=await axios.get('https://www.googleapis.com/customsearch/v1',{params:{key:config.GOOGLE_API_KEY,cx:config.GOOGLE_CX,q:query,num:10},timeout:20000});const out=[];for(const item of r.data.items||[])for(const url of extractUrls([item.title,item.snippet,item.link].join(' ')))out.push({url,source:'Google: '+item.link,name:item.title});return out;}catch(e){console.warn('Google legacy search:',e.response?.data?.error?.message||e.message);return[];}}
 async function webSearch(query){const [web,google]=await Promise.all([freeWebSearch(query),googleSearchLegacy(query)]);return unique([...web,...google]);}
 async function isOnline(url){
   const key=String(url||'').trim().toLowerCase();
@@ -376,8 +376,7 @@ async function run(){
   console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);
   console.log('Target channel count:',channels.length);
   console.log('Search cache entries:',Object.keys(previousCache.channels||{}).length);
-  console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'','SearXNG fallback',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];
-  let nextIndex=0, completed=0;
+  console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'','SearXNG fallback',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];\n  const runSourceStats=emptySourceStats();\n  let nextIndex=0, completed=0;
   async function worker(){
     while(true){
       const i=nextIndex++;
@@ -389,8 +388,7 @@ async function run(){
         const cacheKey=String(channel.name||'').trim().toLowerCase();
         const cachedEntry=previousCache.channels?.[cacheKey]||{};
         const result=await collectChannel(channel,cachedEntry);
-        found.push(...result.results);
-        nextCache.channels[cacheKey]={name:channel.name,candidates:result.cacheCandidates,urls:result.cacheCandidates.map(x=>x.url).filter(Boolean)};
+        found.push(...result.results);\n        for(const [sourceName,counts] of Object.entries(result.sourceStats))for(const key of ['candidates','matched','online'])runSourceStats[sourceName][key]+=counts[key]||0;\n        nextCache.channels[cacheKey]={name:channel.name,candidates:result.cacheCandidates,urls:result.cacheCandidates.map(x=>x.url).filter(Boolean)};
         completed++;
         if(completed%10===0) await savePersistentSearchCache(nextCache);
         githubCodeSearchCache.clear();
@@ -410,7 +408,7 @@ async function run(){
   onlineCheckCache.clear();
   await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);
   await savePersistentSearchCache(nextCache);
-  console.log('Search collection unique online URLs:',found.length);
+  console.log('=== SEARCH SOURCE TOTALS (unique candidates counted per channel) ===');\n  for(const [sourceName,counts] of Object.entries(runSourceStats))if(counts.candidates||counts.matched||counts.online)console.log('[SOURCE TOTAL] '+sourceName+': candidates='+counts.candidates+', channel-matched='+counts.matched+', online-verified='+counts.online);\n  console.log('Search collection unique online URLs:',found.length);
   const live=unique(await collectLive());
   await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);
   console.log('Live-event collection:',live.length);
