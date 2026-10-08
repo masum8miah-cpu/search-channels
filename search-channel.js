@@ -369,14 +369,18 @@ async function run(){
   if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');
   onlineCheckCache.clear();
   const source=await targetFile(config.SOURCE_PLAYLIST);
-  const rawChannels=parseM3U(source.content);\n  const channels=dedupeTargetChannels(rawChannels);\n  console.log('Target playlist entries:',rawChannels.length,'| unique channel names:',channels.length,'| duplicates skipped:',rawChannels.length-channels.length);
+  const rawChannels=parseM3U(source.content);
+  const channels=dedupeTargetChannels(rawChannels);
+  console.log('Target playlist entries:',rawChannels.length,'| unique channel names:',channels.length,'| duplicates skipped:',rawChannels.length-channels.length);
   if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);
   const previousCache=await loadPersistentSearchCache();
   const nextCache={version:1,channels:{}};
   console.log('Fetched latest baseline:',config.SOURCE_PLAYLIST);
   console.log('Target channel count:',channels.length);
   console.log('Search cache entries:',Object.keys(previousCache.channels||{}).length);
-  console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'','SearXNG fallback',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];\n  const runSourceStats=emptySourceStats();\n  let nextIndex=0, completed=0;
+  console.log('Search sources:',[config.GITHUB_ENABLED&&config.GITHUB_TOKEN?'GitHub':'',config.FIRECRAWL_ENABLED?'Firecrawl':'',config.DDG_ENABLED?'DuckDuckGo':'','SearXNG fallback',config.GOOGLE_ENABLED&&config.GOOGLE_API_KEY&&config.GOOGLE_CX?'Google legacy':''].filter(Boolean).join(', ')||'none');let found=[];
+  const runSourceStats=emptySourceStats();
+  let nextIndex=0, completed=0;
   async function worker(){
     while(true){
       const i=nextIndex++;
@@ -388,7 +392,9 @@ async function run(){
         const cacheKey=String(channel.name||'').trim().toLowerCase();
         const cachedEntry=previousCache.channels?.[cacheKey]||{};
         const result=await collectChannel(channel,cachedEntry);
-        found.push(...result.results);\n        for(const [sourceName,counts] of Object.entries(result.sourceStats))for(const key of ['candidates','matched','online'])runSourceStats[sourceName][key]+=counts[key]||0;\n        nextCache.channels[cacheKey]={name:channel.name,candidates:result.cacheCandidates,urls:result.cacheCandidates.map(x=>x.url).filter(Boolean)};
+        found.push(...result.results);
+        for(const [sourceName,counts] of Object.entries(result.sourceStats))for(const key of ['candidates','matched','online'])runSourceStats[sourceName][key]+=counts[key]||0;
+        nextCache.channels[cacheKey]={name:channel.name,candidates:result.cacheCandidates,urls:result.cacheCandidates.map(x=>x.url).filter(Boolean)};
         completed++;
         if(completed%10===0) await savePersistentSearchCache(nextCache);
         githubCodeSearchCache.clear();
@@ -408,7 +414,9 @@ async function run(){
   onlineCheckCache.clear();
   await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);
   await savePersistentSearchCache(nextCache);
-  console.log('=== SEARCH SOURCE TOTALS (unique candidates counted per channel) ===');\n  for(const [sourceName,counts] of Object.entries(runSourceStats))if(counts.candidates||counts.matched||counts.online)console.log('[SOURCE TOTAL] '+sourceName+': candidates='+counts.candidates+', channel-matched='+counts.matched+', online-verified='+counts.online);\n  console.log('Search collection unique online URLs:',found.length);
+  console.log('=== SEARCH SOURCE TOTALS (unique candidates counted per channel) ===');
+  for(const [sourceName,counts] of Object.entries(runSourceStats))if(counts.candidates||counts.matched||counts.online)console.log('[SOURCE TOTAL] '+sourceName+': candidates='+counts.candidates+', channel-matched='+counts.matched+', online-verified='+counts.online);
+  console.log('Search collection unique online URLs:',found.length);
   const live=unique(await collectLive());
   await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);
   console.log('Live-event collection:',live.length);
