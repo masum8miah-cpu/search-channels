@@ -29,19 +29,28 @@ function unique(items){
   return out;
 }
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
+const NAME_NOISE_WORDS = new Set([
+  'tv','television','channel','live','new','stream','streams','online','web','watch',
+  'hd','fhd','uhd','sd','fullhd','4k','8k','hevc','h264','h265','aac',
+  '1080p','1080i','720p','720i','576p','576i','480p','480i','360p','320p','240p','144p','2160p',
+  'm3u','m3u8','iptv','backup','backup2','test','official'
+]);
 function normalizeChannelName(value){
   return String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
     .replace(/\bekushey\b/g,'ekushe')
-    .replace(/\b(1080p|720p|480p|4k|uhd|fhd|hd|sd|live|tv|television|channel)\b/g,' ')
-    .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+    .replace(/\b(2160|1440|1080|720|576|480|360|320|240|144)\s*[pi]\b/g,' ')
+    .replace(/[^a-z0-9]+/g,' ').trim().split(/\s+/)
+    .filter(token=>token && !NAME_NOISE_WORDS.has(token)).join(' ');
 }
 function sameChannelName(target, candidate){
   const a=normalizeChannelName(target), b=normalizeChannelName(candidate);
   if(!a||!b)return false;
   if(a===b)return true;
-  const aa=a.split(' ').filter(Boolean), bb=b.split(' ').filter(Boolean);
-  // Require every meaningful target token to appear in the source entry.
-  return aa.length>0 && aa.every(token=>bb.includes(token));
+  const aa=[...new Set(a.split(' ').filter(Boolean))], bb=new Set(b.split(' ').filter(Boolean));
+  if(!aa.length||!bb.size)return false;
+  const overlap=aa.filter(token=>bb.has(token)).length;
+  const required=aa.length>=3?2:1;
+  return overlap>=required;
 }
 function setName(meta){return String(meta||'').trim();}
 function classifySource(source){const s=String(source||'').toLowerCase();if(s.includes('github'))return 'GitHub';if(s.includes('duckduckgo'))return 'DuckDuckGo';if(s.includes('firecrawl'))return 'Firecrawl';if(s.includes('searx'))return 'SearXNG';if(s.includes('google'))return 'Google';if(s.includes('cache'))return 'Cache';return 'Other';}
@@ -283,15 +292,28 @@ async function collectChannel(channel,cachedEntry){
   for(const c of cacheCandidates){
     const src=classifySource(c.source||'Cache');
     stats[src].candidates++;
-    if(c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name)){
-      stats[src].matched++; candidates.push({...c,source:c.source||'Cache'});
+    const meta=c.meta||c.extinf||c.metadata||'';
+    const cachedName=c.sourceName||c.name||'';
+    if(meta.startsWith('#EXTINF')&&sameChannelName(channel.name,cachedName)){
+      stats[src].matched++; candidates.push({...c,meta,source:c.source||'Cache'});
+    }else if(c.url&&isHttpUrl(c.url)){
+      console.log('[CACHE] '+channel.name+': cached URL lacks usable source metadata/name; recovery hint only.');
     }
   }
-  if(legacyUrls.length) console.log('[CACHE] '+channel.name+': ignored '+legacyUrls.length+' legacy URL-only entries (missing EXTINF/source identity).');
+  if(legacyUrls.length) console.log('[CACHE] '+channel.name+': found '+legacyUrls.length+' legacy URL-only hints; attempting source metadata recovery.');
 
-  const githubBefore=candidates.length;
-  let githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u8');
-  if(!githubCandidates.length) githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
+  const githubQueries=[
+    '"'+channel.name+'" m3u8',
+    '"'+channel.name+'" m3u',
+    channel.name+' live stream m3u8'
+  ];
+  let githubCandidates=[];
+  for(const query of githubQueries){
+    const batch=await queueGithubCodeSearch(query);
+    githubCandidates.push(...batch);
+    githubCandidates=dedupeCandidates(githubCandidates);
+    if(githubCandidates.some(c=>c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name)))break;
+  }
   githubCandidates=dedupeCandidates(githubCandidates);
   stats.GitHub.candidates+=githubCandidates.length;
   const githubMatched=githubCandidates.filter(c=>c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name));
@@ -301,7 +323,23 @@ async function collectChannel(channel,cachedEntry){
   // Search web providers separately for transparent per-provider counts.
   // Search-engine URL-only hits are diagnostic candidates only; without the original
   // source EXTINF metadata they cannot be written into the playlist.
-  const webCandidates=await webSearch('"'+channel.name+'" m3u8');
+  const webQueries=[
+    '"'+channel.name+'" m3u8',
+    '"'+channel.name+'" m3u',
+    channel.name+' live stream playlist'
+  ];
+  let webCandidates=[];
+  for(const query of webQueries){
+    const batch=await webSearch(query);
+    webCandidates.push(...batch);
+    webCandidates=dedupeCandidates(webCandidates);
+    if(webCandidates.some(c=>c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name)))break;
+  }
+  for(const legacyUrl of legacyUrls.slice(0,3)){
+    if(!isHttpUrl(legacyUrl))continue;
+    const recovered=await queueGithubCodeSearch('"'+legacyUrl+'"');
+    webCandidates.push(...recovered);
+  }
   for(const c of webCandidates){
     const src=classifySource(c.source);
     stats[src].candidates++;
