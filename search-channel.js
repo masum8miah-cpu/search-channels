@@ -30,9 +30,9 @@ function unique(items){
 }
 function parseM3U(text){const lines=String(text||'').split(/\r?\n/),out=[];let meta='';for(const raw of lines){const line=raw.trim();if(!line)continue;if(line.startsWith('#EXTINF')){meta=line;continue;}if(line.startsWith('#'))continue;if(/^https?:\/\//i.test(line)){const comma=meta.indexOf(',');out.push({name:comma>=0?meta.slice(comma+1).trim():'Unknown',meta:meta||'#EXTINF:-1,Unknown',url:line});meta='';}}return out;}
 function normalizeChannelName(value){
-  return String(value||'').normalize('NFKD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase()
-    .replace(/\\b(1080p|720p|480p|4k|uhd|fhd|hd|sd|live|tv|television|channel)\\b/g,' ')
-    .replace(/[^a-z0-9]+/g,' ').trim().replace(/\\s+/g,' ');
+  return String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+    .replace(/\b(1080p|720p|480p|4k|uhd|fhd|hd|sd|live|tv|television|channel)\b/g,' ')
+    .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
 }
 function sameChannelName(target, candidate){
   const a=normalizeChannelName(target), b=normalizeChannelName(candidate);
@@ -225,13 +225,13 @@ async function isOnline(url){
       const headers=response.headers||{};
       const type=String(headers['content-type']||'').toLowerCase();
       const finalUrl=String(response.request?.res?.responseUrl||url).toLowerCase();
-      const isPlaylist=/\\.m3u8?(?:[?#]|$)/i.test(finalUrl)||/mpegurl/.test(type);
-      const isTs=/\\.ts(?:[?#]|$)/i.test(finalUrl)||/mp2t/.test(type);
+      const isPlaylist=/\.m3u8?(?:[?#]|$)/i.test(finalUrl)||/mpegurl/.test(type);
+      const isTs=/\.ts(?:[?#]|$)/i.test(finalUrl)||/mp2t/.test(type);
       if(type.includes('text/html')||type.includes('application/xhtml')){
         response.data.destroy();
         return false;
       }
-      if(!isPlaylist&&!isTs&&!/video\\//.test(type)&&!type.includes('octet-stream')){
+      if(!isPlaylist&&!isTs&&!/video\//.test(type)&&!type.includes('octet-stream')){
         response.data.destroy();
         return false;
       }
@@ -248,7 +248,7 @@ async function isOnline(url){
           response.data.on('error',err=>finish(err));
           setTimeout(()=>finish(null,data),Math.min(config.URL_CHECK_TIMEOUT_MS,2500)).unref?.();
         }).catch(()=> '');
-        return status>=200&&status<400&&/^\\s*#EXTM3U\\b/i.test(body);
+        return status>=200&&status<400&&/^\s*#EXTM3U\b/i.test(body);
       }
       // For transport streams, a successful non-HTML response plus a stream-like
       // content type is required; reject pages that merely return HTTP 200.
