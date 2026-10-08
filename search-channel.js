@@ -43,6 +43,9 @@ function sameChannelName(target, candidate){
   return aa.length>0 && aa.every(token=>bb.includes(token));
 }
 function setName(meta){return String(meta||'').trim();}
+function classifySource(source){const s=String(source||'').toLowerCase();if(s.includes('github'))return 'GitHub';if(s.includes('duckduckgo'))return 'DuckDuckGo';if(s.includes('firecrawl'))return 'Firecrawl';if(s.includes('searx'))return 'SearXNG';if(s.includes('google'))return 'Google';if(s.includes('cache'))return 'Cache';return 'Other';}
+function emptySourceStats(){return {GitHub:{candidates:0,matched:0,online:0},DuckDuckGo:{candidates:0,matched:0,online:0},Firecrawl:{candidates:0,matched:0,online:0},SearXNG:{candidates:0,matched:0,online:0},Google:{candidates:0,matched:0,online:0},Cache:{candidates:0,matched:0,online:0},Other:{candidates:0,matched:0,online:0}};}
+function dedupeTargetChannels(channels){const seen=new Set(),out=[];for(const channel of channels){const key=normalizeChannelName(channel.name);if(!key||seen.has(key)){console.log('[TARGET DEDUPE] Skipping duplicate target name: '+channel.name);continue;}seen.add(key);out.push(channel);}return out;}
 function isHttpUrl(value){try{const u=new URL(String(value||''));return u.protocol==='http:'||u.protocol==='https:';}catch{return false;}}
 function extractUrls(text){return (String(text||'').match(/https?:\/\/[^\s"'<>]+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')).filter(u=>/\.(?:m3u8?|ts)(?:[?#]|$)/i.test(u));}
 async function targetFile(path){const r=await gh.get(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`);return{sha:r.data.sha,content:Buffer.from(r.data.content,'base64').toString('utf8')};}
@@ -264,47 +267,70 @@ async function isOnline(url){
   onlineCheckCache.delete(key);
   return result;
 }
-async function collectChannel(channel,cachedCandidates){
-  const query=`"${channel.name}" m3u8`;
+async function collectChannel(channel,cachedEntry){
   const baselineUrl=canonicalUrl(channel.url);
+  const stats=emptySourceStats();
   const dedupeCandidates=list=>unique(Array.isArray(list)?list:[])
     .filter(x=>canonicalUrl(x?.url)!==baselineUrl)
     .filter(x=>isHttpUrl(x?.url))
-    .slice(0,40);
-
-  // Old cache entries contain URLs only, not provenance/EXTINF metadata, so they
-  // must never be used as output candidates.
+    .slice(0,80);
+  const cacheCandidates=Array.isArray(cachedEntry?.candidates)?cachedEntry.candidates:[];
+  const legacyUrls=Array.isArray(cachedEntry?.urls)?cachedEntry.urls:[];
   let candidates=[];
-  let githubCandidates=await queueGithubCodeSearch(query);
-  if(!githubCandidates.length) githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
-  candidates=dedupeCandidates(githubCandidates)
-    .filter(c=>c.meta && sameChannelName(channel.name,c.sourceName||c.name));
+  // Only structured cache entries containing source EXTINF metadata can be reused.
+  // Legacy URL-only entries are retained for migration diagnostics but never trusted as channels.
+  for(const c of cacheCandidates){
+    const src=classifySource(c.source||'Cache');
+    stats[src].candidates++;
+    if(c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name)){
+      stats[src].matched++; candidates.push({...c,source:c.source||'Cache'});
+    }
+  }
+  if(legacyUrls.length) console.log('[CACHE] '+channel.name+': ignored '+legacyUrls.length+' legacy URL-only entries (missing EXTINF/source identity).');
 
-  async function validate(list){
-    const good=[];
-    const checked=dedupeCandidates(list)
-      .filter(c=>c.meta && c.meta.startsWith('#EXTINF'))
-      .filter(c=>sameChannelName(channel.name,c.sourceName||c.name));
-    for(let i=0;i<checked.length;i+=config.URL_CHECK_CONCURRENCY){
-      const batch=checked.slice(i,i+config.URL_CHECK_CONCURRENCY);
-      const results=await Promise.all(batch.map(async c=>({c,ok:await isOnline(c.url)})));
-      for(const {c,ok} of results){
-        if(!ok)continue;
-        // Preserve the source playlist's EXTINF line verbatim: never copy target
-        // name, logo, tvg-id, or group metadata into the result.
-        good.push({name:c.sourceName||c.name,url:c.url,meta:c.meta,source:c.source});
-        if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
-      }
+  const githubBefore=candidates.length;
+  let githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u8');
+  if(!githubCandidates.length) githubCandidates=await queueGithubCodeSearch('"'+channel.name+'" m3u');
+  githubCandidates=dedupeCandidates(githubCandidates);
+  stats.GitHub.candidates+=githubCandidates.length;
+  const githubMatched=githubCandidates.filter(c=>c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name));
+  stats.GitHub.matched+=githubMatched.length;
+  candidates.push(...githubMatched);
+
+  // Search web providers separately for transparent per-provider counts.
+  // Search-engine URL-only hits are diagnostic candidates only; without the original
+  // source EXTINF metadata they cannot be written into the playlist.
+  const webCandidates=await webSearch('"'+channel.name+'" m3u8');
+  for(const c of webCandidates){
+    const src=classifySource(c.source);
+    stats[src].candidates++;
+    if(c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name)){
+      stats[src].matched++; candidates.push(c);
+    }
+  }
+  candidates=dedupeCandidates(candidates)
+    .filter(c=>c.meta&&c.meta.startsWith('#EXTINF'))
+    .filter(c=>sameChannelName(channel.name,c.sourceName||c.name));
+
+  const good=[];
+  for(let i=0;i<candidates.length;i+=config.URL_CHECK_CONCURRENCY){
+    const batch=candidates.slice(i,i+config.URL_CHECK_CONCURRENCY);
+    const results=await Promise.all(batch.map(async c=>({c,ok:await isOnline(c.url)})));
+    for(const {c,ok} of results){
+      const src=classifySource(c.source||'Cache');
+      if(ok){stats[src].online++;good.push({name:c.sourceName||c.name,url:c.url,meta:c.meta,source:c.source||'Cache'});}
       if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
     }
-    return unique(good);
+    if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
   }
-
-  const good=await validate(candidates);
+  const compact=Object.fromEntries(Object.entries(stats).filter(([,v])=>v.candidates||v.matched||v.online));
+  const summary=Object.entries(compact).map(([k,v])=>k+': candidates='+v.candidates+', matched='+v.matched+', online='+v.online).join(' | ')||'no candidates';
+  console.log('[SOURCES] '+channel.name+' => '+summary+' | verified='+unique(good).length);
   return {
     results:unique(good),
-    // Cache is intentionally metadata-free and therefore not reused for output.
-    candidates:unique(candidates).slice(0,10).map(x=>x.url)
+    cacheCandidates:unique(candidates).slice(0,20).map(x=>({url:x.url,name:x.name,sourceName:x.sourceName||x.name,meta:x.meta,source:x.source||'Cache'})),
+    sourceStats:stats,
+    legacyCacheCount:legacyUrls.length
   };
 }
 async function collectLive(){
@@ -343,7 +369,7 @@ async function run(){
   if(!config.GITHUB_TOKEN)throw new Error('GITHUB_TOKEN is required');
   onlineCheckCache.clear();
   const source=await targetFile(config.SOURCE_PLAYLIST);
-  const channels=parseM3U(source.content);
+  const rawChannels=parseM3U(source.content);\n  const channels=dedupeTargetChannels(rawChannels);\n  console.log('Target playlist entries:',rawChannels.length,'| unique channel names:',channels.length,'| duplicates skipped:',rawChannels.length-channels.length);
   if(!channels.length)throw new Error('No channels found in '+config.SOURCE_PLAYLIST);
   const previousCache=await loadPersistentSearchCache();
   const nextCache={version:1,channels:{}};
@@ -370,7 +396,7 @@ async function run(){
         githubCodeSearchCache.clear();
         searxSearchCache.clear();
         onlineCheckCache.clear();
-        console.log(`[${i+1}/${channels.length}] DONE ${channel.name} (+${result.results.length}, ${cached.length?'cache':'search'}, total=${found.length}, completed=${completed})`);
+        console.log(`[${i+1}/${channels.length}] DONE ${channel.name} (+${result.results.length} verified, cache-legacy-ignored=${result.legacyCacheCount}, run-total-raw=${found.length}, completed=${completed}/${channels.length})`);
       }catch(e){
         completed++;
         console.warn(`[${i+1}/${channels.length}] ERROR ${channel.name}: ${e.message}`);
@@ -384,7 +410,7 @@ async function run(){
   onlineCheckCache.clear();
   await writeTarget(config.SEARCH_OUTPUT,render(found),`Search channel collection: ${found.length} online URLs`);
   await savePersistentSearchCache(nextCache);
-  console.log('Search collection:',found.length);
+  console.log('Search collection unique online URLs:',found.length);
   const live=unique(await collectLive());
   await writeTarget(config.LIVE_OUTPUT,render(live),`Live event channel collection: ${live.length} online URLs`);
   console.log('Live-event collection:',live.length);
@@ -413,7 +439,7 @@ async function main(){
     if(process.env.RUN_ON_STARTUP!=='false'){
       void execute();
       setInterval(()=>{void execute();},config.RUN_INTERVAL_MS);
-      console.log('Daily scheduler enabled: '+Math.round(config.RUN_INTERVAL_MS/3600000)+'h interval.');
+      console.log('Scheduler enabled: every '+Math.round(config.RUN_INTERVAL_MS/3600000)+'h.');
     }else state='idle';
     return;
   }
