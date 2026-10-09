@@ -292,10 +292,10 @@ async function collectChannel(channel,cachedEntry){
   for(const c of cacheCandidates){
     const src=classifySource(c.source||'Cache');
     stats[src].candidates++;
-    const meta=c.meta||c.extinf||c.metadata||'';
-    const cachedName=c.sourceName||c.name||'';
-    if(meta.startsWith('#EXTINF')&&sameChannelName(channel.name,cachedName)){
-      stats[src].matched++; candidates.push({...c,meta,source:c.source||'Cache'});
+    const meta=typeof c.meta==='string'?c.meta:'';
+    const cachedName=typeof c.sourceName==='string'?c.sourceName:'';
+    if(meta.startsWith('#EXTINF')&&cachedName&&sameChannelName(channel.name,cachedName)){
+      stats[src].matched++; candidates.push({...c,name:cachedName,sourceName:cachedName,meta,source:c.source||'Cache'});
     }else if(c.url&&isHttpUrl(c.url)){
       console.log('[CACHE] '+channel.name+': cached URL lacks usable source metadata/name; recovery hint only.');
     }
@@ -312,7 +312,7 @@ async function collectChannel(channel,cachedEntry){
     const batch=await queueGithubCodeSearch(query);
     githubCandidates.push(...batch);
     githubCandidates=dedupeCandidates(githubCandidates);
-    if(githubCandidates.some(c=>c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName||c.name)))break;
+    if(githubCandidates.some(c=>c.meta&&c.meta.startsWith('#EXTINF')&&sameChannelName(channel.name,c.sourceName)))break;
   }
   githubCandidates=dedupeCandidates(githubCandidates);
   stats.GitHub.candidates+=githubCandidates.length;
@@ -357,7 +357,7 @@ async function collectChannel(channel,cachedEntry){
     const results=await Promise.all(batch.map(async c=>({c,ok:await isOnline(c.url)})));
     for(const {c,ok} of results){
       const src=classifySource(c.source||'Cache');
-      if(ok){stats[src].online++;good.push({name:c.sourceName||c.name,url:c.url,meta:c.meta,source:c.source||'Cache'});}
+      if(ok){stats[src].online++;good.push({url:c.url,meta:c.meta,source:c.source||'Cache'});}
       if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
     }
     if(good.length>=config.MAX_RESULTS_PER_CHANNEL)break;
@@ -388,7 +388,7 @@ async function collectLive(){
   }
   return good;
 }
-function render(items){return '#EXTM3U\n'+items.map(x=>x.meta+'\n'+x.url).join('\n')+'\n';}
+function render(items){const entries=(Array.isArray(items)?items:[]).filter(x=>typeof x?.meta==='string'&&x.meta.startsWith('#EXTINF')&&isHttpUrl(x.url));return '#EXTM3U\n'+entries.map(x=>x.meta+'\n'+x.url).join('\n')+'\n';}
 async function writeTarget(path,content,message){let sha=null;try{sha=(await targetFile(path)).sha;}catch(e){if(e.response?.status!==404)throw e;}const body={message,content:Buffer.from(content,'utf8').toString('base64'),branch:config.TARGET_BRANCH};if(sha)body.sha=sha;await gh.put(`/repos/${config.GITHUB_OWNER}/${config.TARGET_REPO}/contents/${encodeURIComponent(path)}`,body);}
 async function loadPersistentSearchCache(){
   try{
